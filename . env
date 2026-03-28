@@ -1,0 +1,23 @@
+# Development only - DO NOT use in production
+SECRET_KEY=d059163a83113cb6e074ce4190c9aa199576c9c694d130172f15f49abe2d86b0 
+JWT_SECRET_KEY=95f4eab367d48edaee2c937f37d9445af1a2f25f27133090923e8d85635ccba6
+ 
+DEBUG=True
+
+# Database - SQLite works immediately
+DATABASE_URL=sqlite:///database.db
+
+# Paystack - Get these from paystack.com (free)
+PAYSTACK_SECRET_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxx
+PAYSTACK_PUBLIC_KEY=pk_test_xxxxxxxxxxxxxxxxxxxxxx
+
+# VTPass - Get from vtpass.com
+VTPASS_API_KEY=your-vtpass-api-key-here
+VTPASS_BASE_URL=https://vtpass.com/api
+
+# Termii - Optional for testing (leave blank to skip SMS)
+TERMII_API_KEY=
+TERMII_SENDER_ID=Cheap4uApp
+
+# App URL
+BACKEND_URL=http://localhost:10000
