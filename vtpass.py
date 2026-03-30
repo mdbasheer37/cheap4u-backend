@@ -1,341 +1,310 @@
-from flask import Blueprint, request, jsonify, current_app
+import os
 import requests
-from datetime import datetime
+from flask import current_app, jsonify
 from models import db, User, Transaction, Profit
-from flask_jwt_extended import jwt_required, get_jwt_identity
-import json
 
-vtpass_bp = Blueprint('vtpass', __name__, url_prefix='/api/vtpass')
+# Configuration for CheapDataHub
+CHEAPDATAHUB_API_KEY = os.environ.get("CHEAPDATAHUB_API_KEY", "")
+CHEAPDATAHUB_BASE_URL = os.environ.get("CHEAPDATAHUB_BASE_URL", "https://api.cheapdatahub.com/v1")
 
-def vtpass_request(endpoint, method='POST', data=None):
-    """Make request to VTPass API"""
-    api_key = current_app.config['VTPASS_API_KEY']
-    base_url = current_app.config['VTPASS_BASE_URL']
-    
+# Profit margins per service (in percentage)
+PROFIT_MARGINS = {
+    "airtime": float(os.environ.get("PROFIT_MARGIN_AIRTIME", "5")),
+    "data": float(os.environ.get("PROFIT_MARGIN_DATA", "10")),
+    "electricity": float(os.environ.get("PROFIT_MARGIN_ELECTRICITY", "5")),
+    "cable_tv": float(os.environ.get("PROFIT_MARGIN_CABLE_TV", "5")),
+    "exam_pin": float(os.environ.get("PROFIT_MARGIN_EXAM_PIN", "10")),
+}
+
+def cheapdatahub_request(endpoint, method="POST", data=None):
+    """Make a request to CheapDataHub API."""
     headers = {
-        'api-key': api_key,
-        'secret-key': api_key,
-        'Content-Type': 'application/json'
+        "Authorization": f"Bearer {CHEAPDATAHUB_API_KEY}",
+        "Content-Type": "application/json",
     }
-    
-    url = f"{base_url}/{endpoint}"
-    
+    url = f"{CHEAPDATAHUB_BASE_URL}/{endpoint}"
     try:
-        if method.upper() == 'GET':
+        if method.upper() == "GET":
             response = requests.get(url, headers=headers, timeout=30)
         else:
             response = requests.post(url, json=data, headers=headers, timeout=30)
-        
         return response.json()
     except Exception as e:
-        return {'code': 'error', 'response_description': str(e)}
+        return {"status": "error", "message": str(e)}
 
-@vtpass_bp.route('/airtime', methods=['POST'])
-def buy_airtime():
-    """Purchase airtime via VTPass"""
-    data = request.get_json()
-    
-    network = data.get('network')
-    phone = data.get('phone')
-    amount = data.get('amount')
-    service_id = data.get('service_id')
-    user_email = data.get('user_email')
-    
-    # Prepare VTPass request
-    vtpass_data = {
-        'serviceID': service_id,
-        'billersCode': phone,
-        'amount': amount,
-        'variation_code': service_id,
-        'phone': phone
+def calculate_profit(cost_price, profit_margin_percent):
+    """Calculate selling price based on cost price and profit margin."""
+    profit_amount = cost_price * (profit_margin_percent / 100)
+    selling_price = cost_price + profit_amount
+    return selling_price, profit_amount
+
+def buy_airtime(network, phone, amount, user_email):
+    """Purchase airtime via CheapDataHub."""
+    # 1. Get cost price from CheapDataHub
+    cost_data = cheapdatahub_request(
+        f"airtime/cost?network={network}&amount={amount}", method="GET"
+    )
+    if cost_data.get("status") != "success":
+        return {"status": "error", "message": "Failed to get airtime cost"}
+
+    cost_price = cost_data["data"]["cost_price"]
+    # 2. Calculate selling price and profit
+    selling_price, profit_amount = calculate_profit(cost_price, PROFIT_MARGINS["airtime"])
+    # 3. Purchase from CheapDataHub
+    purchase_data = {
+        "network": network,
+        "phone": phone,
+        "amount": amount,
+        "selling_price": selling_price,
     }
-    
-    result = vtpass_request('pay', 'POST', vtpass_data)
-    
-    if result.get('code') == '000':
-        # Transaction successful
-        profit_amount = amount * 0.05  # 5% profit margin
-        
+    result = cheapdatahub_request("airtime/purchase", method="POST", data=purchase_data)
+    if result.get("status") == "success":
         # Record transaction
-        user = User.query.filter_by(email=user_email).first() if user_email else None
-        
+        user = User.query.filter_by(email=user_email).first()
         transaction = Transaction(
             user_id=user.id if user else None,
-            reference=result.get('requestId'),
-            type='airtime',
-            service_type='airtime',
-            amount=amount,
-            profit=profit_amount,
-            status='success',
-            details={
-                'network': network,
-                'phone': phone,
-                'transaction_id': result.get('transactionId')
-            }
-        )
-        db.session.add(transaction)
-        
-        # Record profit
-        if user:
-            profit = Profit(
-                transaction_id=transaction.id,
-                user_id=user.id,
-                category='airtime',
-                amount=profit_amount
-            )
-            db.session.add(profit)
-            
-            # Deduct from user wallet
-            if user.wallet_balance >= amount:
-                user.wallet_balance -= amount
-        
-        db.session.commit()
-        
-        return jsonify({
-            'status': 'success',
-            'message': 'Airtime purchase successful',
-            'data': {
-                'transaction_id': result.get('transactionId'),
-                'profit_amount': profit_amount
-            }
-        })
-    else:
-        error_msg = result.get('response_description', 'Transaction failed')
-        return jsonify({
-            'status': 'error',
-            'message': f'Airtime purchase failed: {error_msg}'
-        }), 400
-
-@vtpass_bp.route('/data', methods=['POST'])
-def buy_data():
-    """Purchase data via VTPass"""
-    data = request.get_json()
-    
-    network = data.get('network')
-    phone = data.get('phone')
-    plan_code = data.get('plan_code')
-    base_price = data.get('base_price')
-    selling_price = data.get('selling_price')
-    service_id = data.get('service_id')
-    user_email = data.get('user_email')
-    
-    # Prepare VTPass request
-    vtpass_data = {
-        'serviceID': service_id,
-        'billersCode': phone,
-        'amount': selling_price,
-        'variation_code': plan_code,
-        'phone': phone
-    }
-    
-    result = vtpass_request('pay', 'POST', vtpass_data)
-    
-    if result.get('code') == '000':
-        profit_amount = selling_price - base_price
-        
-        # Record transaction
-        user = User.query.filter_by(email=user_email).first() if user_email else None
-        
-        transaction = Transaction(
-            user_id=user.id if user else None,
-            reference=result.get('requestId'),
-            type='data',
-            service_type='data',
+            reference=result.get("reference"),
+            type="airtime",
+            service_type="airtime",
             amount=selling_price,
             profit=profit_amount,
-            status='success',
+            status="success",
             details={
-                'network': network,
-                'phone': phone,
-                'plan_code': plan_code,
-                'transaction_id': result.get('transactionId')
-            }
+                "network": network,
+                "phone": phone,
+                "amount": amount,
+                "cost_price": cost_price,
+                "profit_margin": PROFIT_MARGINS["airtime"],
+            },
         )
         db.session.add(transaction)
-        
-        # Record profit
         if user:
             profit = Profit(
                 transaction_id=transaction.id,
                 user_id=user.id,
-                category='data',
-                amount=profit_amount
+                category="airtime",
+                amount=profit_amount,
             )
             db.session.add(profit)
-            
-            # Deduct from user wallet
             if user.wallet_balance >= selling_price:
                 user.wallet_balance -= selling_price
-        
         db.session.commit()
-        
-        return jsonify({
-            'status': 'success',
-            'message': 'Data purchase successful',
-            'data': {
-                'transaction_id': result.get('transactionId'),
-                'profit_amount': profit_amount
-            }
-        })
+        return {
+            "status": "success",
+            "message": "Airtime purchase successful",
+            "data": {
+                "transaction_id": result.get("transaction_id"),
+                "profit_amount": profit_amount,
+                "selling_price": selling_price,
+            },
+        }
     else:
-        error_msg = result.get('response_description', 'Transaction failed')
-        return jsonify({
-            'status': 'error',
-            'message': f'Data purchase failed: {error_msg}'
-        }), 400
+        return {
+            "status": "error",
+            "message": result.get("message", "Airtime purchase failed"),
+        }
 
-@vtpass_bp.route('/electricity', methods=['POST'])
-def buy_electricity():
-    """Purchase electricity via VTPass"""
-    data = request.get_json()
-    
-    disco = data.get('disco')
-    meter_number = data.get('meter_number')
-    meter_type = data.get('meter_type')
-    amount = data.get('amount')
-    phone = data.get('phone')
-    user_email = data.get('user_email')
-    
-    # Prepare VTPass request
-    vtpass_data = {
-        'serviceID': disco,
-        'billersCode': meter_number,
-        'amount': amount,
-        'variation_code': meter_type,
-        'phone': phone
+def buy_data(network, phone, plan_code, user_email):
+    """Purchase data via CheapDataHub."""
+    # 1. Get cost price from CheapDataHub
+    cost_data = cheapdatahub_request(
+        f"data/cost?network={network}&plan_code={plan_code}", method="GET"
+    )
+    if cost_data.get("status") != "success":
+        return {"status": "error", "message": "Failed to get data cost"}
+
+    cost_price = cost_data["data"]["cost_price"]
+    # 2. Calculate selling price and profit
+    selling_price, profit_amount = calculate_profit(cost_price, PROFIT_MARGINS["data"])
+    # 3. Purchase from CheapDataHub
+    purchase_data = {
+        "network": network,
+        "phone": phone,
+        "plan_code": plan_code,
+        "selling_price": selling_price,
     }
-    
-    result = vtpass_request('pay', 'POST', vtpass_data)
-    
-    if result.get('code') == '000':
-        profit_amount = amount * 0.05  # 5% profit margin
-        
+    result = cheapdatahub_request("data/purchase", method="POST", data=purchase_data)
+    if result.get("status") == "success":
         # Record transaction
-        user = User.query.filter_by(email=user_email).first() if user_email else None
-        
+        user = User.query.filter_by(email=user_email).first()
         transaction = Transaction(
             user_id=user.id if user else None,
-            reference=result.get('requestId'),
-            type='electricity',
-            service_type='electricity',
-            amount=amount,
+            reference=result.get("reference"),
+            type="data",
+            service_type="data",
+            amount=selling_price,
             profit=profit_amount,
-            status='success',
+            status="success",
             details={
-                'disco': disco,
-                'meter_number': meter_number,
-                'meter_type': meter_type,
-                'phone': phone,
-                'token': result.get('response_description', ''),
-                'transaction_id': result.get('transactionId')
-            }
+                "network": network,
+                "phone": phone,
+                "plan_code": plan_code,
+                "cost_price": cost_price,
+                "profit_margin": PROFIT_MARGINS["data"],
+            },
         )
         db.session.add(transaction)
-        
-        # Record profit
         if user:
             profit = Profit(
                 transaction_id=transaction.id,
                 user_id=user.id,
-                category='electricity',
-                amount=profit_amount
+                category="data",
+                amount=profit_amount,
             )
             db.session.add(profit)
-            
-            # Deduct from user wallet
-            if user.wallet_balance >= amount:
-                user.wallet_balance -= amount
-        
+            if user.wallet_balance >= selling_price:
+                user.wallet_balance -= selling_price
         db.session.commit()
-        
-        return jsonify({
-            'status': 'success',
-            'message': 'Electricity purchase successful',
-            'data': {
-                'transaction_id': result.get('transactionId'),
-                'token': result.get('response_description', ''),
-                'profit_amount': profit_amount
-            }
-        })
+        return {
+            "status": "success",
+            "message": "Data purchase successful",
+            "data": {
+                "transaction_id": result.get("transaction_id"),
+                "profit_amount": profit_amount,
+                "selling_price": selling_price,
+            },
+        }
     else:
-        error_msg = result.get('response_description', 'Transaction failed')
-        return jsonify({
-            'status': 'error',
-            'message': f'Electricity purchase failed: {error_msg}'
-        }), 400
+        return {
+            "status": "error",
+            "message": result.get("message", "Data purchase failed"),
+        }
 
-@vtpass_bp.route('/cable-tv', methods=['POST'])
-def buy_cable_tv():
-    """Purchase cable TV subscription via VTPass"""
-    data = request.get_json()
-    
-    provider = data.get('provider')
-    package = data.get('package')
-    smartcard = data.get('smartcard')
-    amount = data.get('amount')
-    user_email = data.get('user_email')
-    
-    # Prepare VTPass request
-    vtpass_data = {
-        'serviceID': provider,
-        'billersCode': smartcard,
-        'amount': amount,
-        'variation_code': package,
-        'phone': smartcard
+def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
+    """Purchase electricity via CheapDataHub."""
+    # 1. Get cost price from CheapDataHub
+    cost_data = cheapdatahub_request(
+        f"electricity/cost?disco={disco}&meter_number={meter_number}&meter_type={meter_type}&amount={amount}",
+        method="GET",
+    )
+    if cost_data.get("status") != "success":
+        return {"status": "error", "message": "Failed to get electricity cost"}
+
+    cost_price = cost_data["data"]["cost_price"]
+    # 2. Calculate selling price and profit
+    selling_price, profit_amount = calculate_profit(cost_price, PROFIT_MARGINS["electricity"])
+    # 3. Purchase from CheapDataHub
+    purchase_data = {
+        "disco": disco,
+        "meter_number": meter_number,
+        "meter_type": meter_type,
+        "amount": amount,
+        "phone": phone,
+        "selling_price": selling_price,
     }
-    
-    result = vtpass_request('pay', 'POST', vtpass_data)
-    
-    if result.get('code') == '000':
-        profit_amount = amount * 0.05  # 5% profit margin
-        
+    result = cheapdatahub_request("electricity/purchase", method="POST", data=purchase_data)
+    if result.get("status") == "success":
         # Record transaction
-        user = User.query.filter_by(email=user_email).first() if user_email else None
-        
+        user = User.query.filter_by(email=user_email).first()
         transaction = Transaction(
             user_id=user.id if user else None,
-            reference=result.get('requestId'),
-            type='cable_tv',
-            service_type='cable_tv',
-            amount=amount,
+            reference=result.get("reference"),
+            type="electricity",
+            service_type="electricity",
+            amount=selling_price,
             profit=profit_amount,
-            status='success',
+            status="success",
             details={
-                'provider': provider,
-                'package': package,
-                'smartcard': smartcard,
-                'transaction_id': result.get('transactionId')
-            }
+                "disco": disco,
+                "meter_number": meter_number,
+                "meter_type": meter_type,
+                "phone": phone,
+                "token": result.get("token", ""),
+                "cost_price": cost_price,
+                "profit_margin": PROFIT_MARGINS["electricity"],
+            },
         )
         db.session.add(transaction)
-        
-        # Record profit
         if user:
             profit = Profit(
                 transaction_id=transaction.id,
                 user_id=user.id,
-                category='cable_tv',
-                amount=profit_amount
+                category="electricity",
+                amount=profit_amount,
             )
             db.session.add(profit)
-            
-            # Deduct from user wallet
-            if user.wallet_balance >= amount:
-                user.wallet_balance -= amount
-        
+            if user.wallet_balance >= selling_price:
+                user.wallet_balance -= selling_price
         db.session.commit()
-        
-        return jsonify({
-            'status': 'success',
-            'message': 'Cable TV subscription successful',
-            'data': {
-                'transaction_id': result.get('transactionId'),
-                'profit_amount': profit_amount
-            }
-        })
+        return {
+            "status": "success",
+            "message": "Electricity purchase successful",
+            "data": {
+                "transaction_id": result.get("transaction_id"),
+                "token": result.get("token", ""),
+                "profit_amount": profit_amount,
+                "selling_price": selling_price,
+            },
+        }
     else:
-        error_msg = result.get('response_description', 'Transaction failed')
-        return jsonify({
-            'status': 'error',
-            'message': f'Cable TV subscription failed: {error_msg}'
-        }), 400 
+        return {
+            "status": "error",
+            "message": result.get("message", "Electricity purchase failed"),
+        }
+
+def buy_cable_tv(provider, package, smartcard, amount, user_email):
+    """Purchase cable TV subscription via CheapDataHub."""
+    # 1. Get cost price from CheapDataHub
+    cost_data = cheapdatahub_request(
+        f"cable/cost?provider={provider}&package={package}", method="GET"
+    )
+    if cost_data.get("status") != "success":
+        return {"status": "error", "message": "Failed to get cable TV cost"}
+
+    cost_price = cost_data["data"]["cost_price"]
+    # 2. Calculate selling price and profit
+    selling_price, profit_amount = calculate_profit(cost_price, PROFIT_MARGINS["cable_tv"])
+    # 3. Purchase from CheapDataHub
+    purchase_data = {
+        "provider": provider,
+        "package": package,
+        "smartcard": smartcard,
+        "amount": amount,
+        "selling_price": selling_price,
+    }
+    result = cheapdatahub_request("cable/purchase", method="POST", data=purchase_data)
+    if result.get("status") == "success":
+        # Record transaction
+        user = User.query.filter_by(email=user_email).first()
+        transaction = Transaction(
+            user_id=user.id if user else None,
+            reference=result.get("reference"),
+            type="cable_tv",
+            service_type="cable_tv",
+            amount=selling_price,
+            profit=profit_amount,
+            status="success",
+            details={
+                "provider": provider,
+                "package": package,
+                "smartcard": smartcard,
+                "cost_price": cost_price,
+                "profit_margin": PROFIT_MARGINS["cable_tv"],
+            },
+        )
+        db.session.add(transaction)
+        if user:
+            profit = Profit(
+                transaction_id=transaction.id,
+                user_id=user.id,
+                category="cable_tv",
+                amount=profit_amount,
+            )
+            db.session.add(profit)
+            if user.wallet_balance >= selling_price:
+                user.wallet_balance -= selling_price
+        db.session.commit()
+        return {
+            "status": "success",
+            "message": "Cable TV subscription successful",
+            "data": {
+                "transaction_id": result.get("transaction_id"),
+                "profit_amount": profit_amount,
+                "selling_price": selling_price,
+            },
+        }
+    else:
+        return {
+            "status": "error",
+            "message": result.get("message", "Cable TV subscription failed"),
+        }
