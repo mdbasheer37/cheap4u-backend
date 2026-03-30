@@ -8,8 +8,8 @@ DEBUG=True
 DATABASE_URL=sqlite:///database.db
 
 # Paystack - Get these from paystack.com (free)
-PAYSTACK_SECRET_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxx
-PAYSTACK_PUBLIC_KEY=pk_test_xxxxxxxxxxxxxxxxxxxxxx
+PAYSTACK_SECRET_KEY=sk_test_5c57ca8a019c0cf50ef3312228587057d30e8a66 
+PAYSTACK_PUBLIC_KEY=pk_test_b8f7988d75720f9bd4a44698420689bd56b9ccb4 
 
 # VTPass - Get from vtpass.com
 VTPASS_API_KEY=your-vtpass-api-key-here
