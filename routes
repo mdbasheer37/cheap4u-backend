@@ -1,0 +1,51 @@
+from flask import Blueprint, request, jsonify
+from cheapdatahub import buy_airtime, buy_data, buy_electricity, buy_cable_tv
+
+vtpass_bp = Blueprint('vtpass', __name__, url_prefix='/api/vtpass')
+
+@vtpass_bp.route('/airtime', methods=['POST'])
+def purchase_airtime():
+    data = request.get_json()
+    result = buy_airtime(
+        network=data.get('network'),
+        phone=data.get('phone'),
+        amount=data.get('amount'),
+        user_email=data.get('user_email')
+    )
+    return jsonify(result)
+
+@vtpass_bp.route('/data', methods=['POST'])
+def purchase_data():
+    data = request.get_json()
+    result = buy_data(
+        network=data.get('network'),
+        phone=data.get('phone'),
+        plan_code=data.get('plan_code'),
+        user_email=data.get('user_email')
+    )
+    return jsonify(result)
+
+@vtpass_bp.route('/electricity', methods=['POST'])
+def purchase_electricity():
+    data = request.get_json()
+    result = buy_electricity(
+        disco=data.get('disco'),
+        meter_number=data.get('meter_number'),
+        meter_type=data.get('meter_type'),
+        amount=data.get('amount'),
+        phone=data.get('phone'),
+        user_email=data.get('user_email')
+    )
+    return jsonify(result)
+
+@vtpass_bp.route('/cable-tv', methods=['POST'])
+def purchase_cable_tv():
+    data = request.get_json()
+    result = buy_cable_tv(
+        provider=data.get('provider'),
+        package=data.get('package'),
+        smartcard=data.get('smartcard'),
+        amount=data.get('amount'),
+        user_email=data.get('user_email')
+    )
+    return jsonify(result)
