@@ -3,10 +3,25 @@ from cheapdatahub import buy_airtime, buy_data, buy_electricity, buy_cable_tv
 
 vtpass_bp = Blueprint('vtpass', __name__, url_prefix='/api/vtpass')
 
+
+
+
 @vtpass_bp.route('/airtime', methods=['POST'])
+@jwt_required()
 def purchase_airtime():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
     data = request.get_json()
-    result = buy_airtime(
+    pin = data.get('pin')
+    if not pin:
+        return jsonify({'status': 'error', 'message': 'Transaction PIN required'}), 400
+
+    # Verify PIN
+    if not user.transaction_pin_hash or not bcrypt.checkpw(pin.encode('utf-8'), user.transaction_pin_hash.encode('utf-8')):
+        return jsonify({'status': 'error', 'message': 'Incorrect transaction PIN'}), 401
         network=data.get('network'),
         phone=data.get('phone'),
         amount=data.get('amount'),
@@ -15,9 +30,21 @@ def purchase_airtime():
     return jsonify(result)
 
 @vtpass_bp.route('/data', methods=['POST'])
+@jwt_required()
 def purchase_data():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
     data = request.get_json()
-    result = buy_data(
+    pin = data.get('pin')
+    if not pin:
+        return jsonify({'status': 'error', 'message': 'Transaction PIN required'}), 400
+
+    # Verify PIN
+    if not user.transaction_pin_hash or not bcrypt.checkpw(pin.encode('utf-8'), user.transaction_pin_hash.encode('utf-8')):
+        return jsonify({'status': 'error', 'message': 'Incorrect transaction PIN'}), 401 
         network=data.get('network'),
         phone=data.get('phone'),
         plan_code=data.get('plan_code'),
@@ -38,9 +65,21 @@ def purchase_electricity():
     )
     return jsonify(result)
 
-@vtpass_bp.route('/cable-tv', methods=['POST'])
+@jwt_required()
 def purchase_cable_tv():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
     data = request.get_json()
+    pin = data.get('pin')
+    if not pin:
+        return jsonify({'status': 'error', 'message': 'Transaction PIN required'}), 400
+
+    # Verify PIN
+    if not user.transaction_pin_hash or not bcrypt.checkpw(pin.encode('utf-8'), user.transaction_pin_hash.encode('utf-8')):
+        return jsonify({'status': 'error', 'message': 'Incorrect transaction PIN'}), 401 
     result = buy_cable_tv(
         provider=data.get('provider'),
         package=data.get('package'),
