@@ -20,6 +20,8 @@ class User(db.Model):
     is_premium = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime, default=datetime.utcnow)
+    transaction_pin_hash = db.Column(db.String(200), nullable=True) 
+ 
     
     def set_password(self, password):
         salt = bcrypt.gensalt()
