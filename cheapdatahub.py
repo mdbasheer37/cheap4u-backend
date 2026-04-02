@@ -308,3 +308,69 @@ def buy_cable_tv(provider, package, smartcard, amount, user_email):
             "status": "error",
             "message": result.get("message", "Cable TV subscription failed"),
         }
+
+def buy_exam_pin(exam_type, quantity, user_email):
+    """Purchase exam pins via CheapDataHub."""
+    # 1. Get cost price from CheapDataHub
+    cost_data = cheapdatahub_request(
+        f"exam/cost?exam_type={exam_type}&quantity={quantity}", method="GET"
+    )
+    if cost_data.get("status") != "success":
+        return {"status": "error", "message": "Failed to get exam pin cost"}
+
+    cost_price = cost_data["data"]["cost_price"]
+    # 2. Calculate selling price and profit
+    selling_price, profit_amount = calculate_profit(cost_price, PROFIT_MARGINS["exam_pin"])
+    # 3. Purchase from CheapDataHub
+    purchase_data = {
+        "exam_type": exam_type,
+        "quantity": quantity,
+        "selling_price": selling_price,
+    }
+    result = cheapdatahub_request("exam/purchase", method="POST", data=purchase_data)
+    if result.get("status") == "success":
+        # Record transaction
+        user = User.query.filter_by(email=user_email).first()
+        transaction = Transaction(
+            user_id=user.id if user else None,
+            reference=result.get("reference"),
+            type="exam_pin",
+            service_type="exam_pin",
+            amount=selling_price,
+            profit=profit_amount,
+            status="success",
+            details={
+                "exam_type": exam_type,
+                "quantity": quantity,
+                "pins": result.get("pins", []),
+                "cost_price": cost_price,
+                "profit_margin": PROFIT_MARGINS["exam_pin"],
+            },
+        )
+        db.session.add(transaction)
+        if user:
+            profit = Profit(
+                transaction_id=transaction.id,
+                user_id=user.id,
+                category="exam_pin",
+                amount=profit_amount,
+            )
+            db.session.add(profit)
+            if user.wallet_balance >= selling_price:
+                user.wallet_balance -= selling_price
+        db.session.commit()
+        return {
+            "status": "success",
+            "message": "Exam PIN purchase successful",
+            "data": {
+                "transaction_id": result.get("transaction_id"),
+                "pins": result.get("pins", []),
+                "profit_amount": profit_amount,
+                "selling_price": selling_price,
+            },
+        }
+    else:
+        return {
+            "status": "error",
+            "message": result.get("message", "Exam PIN purchase failed"),
+        } 
