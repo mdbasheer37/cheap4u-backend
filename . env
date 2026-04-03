@@ -16,7 +16,7 @@ PAYSTACK_PUBLIC_KEY=pk_test_b8f7988d75720f9bd4a44698420689bd56b9ccb4
 #VTPASS_BASE_URL=https://vtpass.com/api
 
 # CheapDataHub API credentials (get these from CheapDataHub)
-CHEAPDATAHUB_API_KEY=your_actual_api_key_here
+CHEAPDATAHUB_API_KEY=de13aa185599dd8977a980ac3194ca5221b882fd 
 CHEAPDATAHUB_BASE_URL=https://api.cheapdatahub.com/v1   # update with real URL
 
 # Your profit margins (percentage)
