@@ -30,7 +30,9 @@ def create_app():
     from vtpass import vtpass_bp
     from referral import referral_bp
     from admin import admin_bp
+    from plans import plans_bp
     
+    app.register_blueprint(plans_bp)
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(payment_bp, url_prefix='/api/payment')
     app.register_blueprint(vtpass_bp)
