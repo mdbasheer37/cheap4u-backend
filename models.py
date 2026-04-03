@@ -118,3 +118,32 @@ class Profit(db.Model):
     category = db.Column(db.String(50))  # airtime, data, electricity, cable_tv, exam_pin
     amount = db.Column(db.Float, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class DataPlan(db.Model):
+    __tablename__ = 'data_plans'
+    id = db.Column(db.Integer, primary_key=True)
+    plan_id = db.Column(db.Integer, nullable=False)          # The ID from CheapDataHub table
+    provider = db.Column(db.String(50), nullable=False)      # mtn, glo, airtel, 9mobile
+    size = db.Column(db.String(50))                          # e.g., "1GB"
+    duration = db.Column(db.String(50))                      # e.g., "30 Days"
+    selling_price = db.Column(db.Float, nullable=False)      # Price to customer (₦)
+    cost_price = db.Column(db.Float, nullable=False)         # What CheapDataHub charges you
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class CablePlan(db.Model):
+    __tablename__ = 'cable_plans'
+    id = db.Column(db.Integer, primary_key=True)
+    plan_id = db.Column(db.Integer, nullable=False)          # ID from table (3,4,5...)
+    provider = db.Column(db.String(50), nullable=False)      # DSTV, GOTV, STARTIMES
+    plan_name = db.Column(db.String(100), nullable=False)    # e.g., "DStv Compact"
+    selling_price = db.Column(db.Float, nullable=False)      # Price to customer
+    cost_price = db.Column(db.Float, nullable=False)         # Your cost (default = selling_price * 0.95)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ElectricityProvider(db.Model):
+    __tablename__ = 'electricity_providers'
+    id = db.Column(db.Integer, primary_key=True)
+    provider_id = db.Column(db.Integer, nullable=False)      # 1 for AEDC, etc.
+    name = db.Column(db.String(100), nullable=False)         # "Abuja Electric AEDC"
+    discount_percent = db.Column(db.Float, default=0.0)      # Discount you get from CheapDataHub (if any)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow) 
