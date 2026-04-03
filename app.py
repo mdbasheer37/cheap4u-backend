@@ -65,6 +65,9 @@ def create_app():
     # Create tables
     with app.app_context():
         db.create_all()
+        # In app.py, after db.create_all()
+        from init_plans import init_all
+init_all() 
         print("✅ Database tables ready")
     
     return app
