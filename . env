@@ -19,6 +19,13 @@ PAYSTACK_PUBLIC_KEY=pk_test_b8f7988d75720f9bd4a44698420689bd56b9ccb4
 CHEAPDATAHUB_API_KEY=de13aa185599dd8977a980ac3194ca5221b882fd 
 CHEAPDATAHUB_BASE_URL=https://api.cheapdatahub.com/v1   # update with real URL
 
+# VtuNaija API for Exam Pins
+VTUNAIJA_API_KEY=Ibrahim5804d35f7f1be7284bf4e972cf41b7
+VTUNAIJA_BASE_URL=https://vtunaija.com.ng/api
+
+# Profit margin for exam pins (percentage)
+PROFIT_MARGIN_EXAM_PIN=10 
+
 # Your profit margins (percentage)
 PROFIT_MARGIN_AIRTIME=5
 PROFIT_MARGIN_DATA=10
