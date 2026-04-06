@@ -1,30 +1,20 @@
-import os
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from config import Config
 from models import db
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+import os
 
 def create_app():
     app = Flask(__name__)
-    
-    # Use environment variables with fallbacks
     app.config.from_object(Config)
-    
-    # Override database URL for production
-    if os.getenv('DATABASE_URL'):
-        app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL').replace('postgres://', 'postgresql://')
     
     # Initialize extensions
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     db.init_app(app)
     jwt = JWTManager(app)
     
-    # Register blueprints
+    # Import blueprints
     from auth import auth_bp
     from payment import payment_bp
     from vtpass import vtpass_bp
@@ -32,12 +22,12 @@ def create_app():
     from admin import admin_bp
     from plans import plans_bp
     
-    app.register_blueprint(plans_bp)
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(payment_bp, url_prefix='/api/payment')
     app.register_blueprint(vtpass_bp)
     app.register_blueprint(referral_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(plans_bp)
     
     # Health check
     @app.route('/health', methods=['GET'])
@@ -45,6 +35,7 @@ def create_app():
         return jsonify({
             'status': 'healthy',
             'message': 'Backend is running',
+            'database': 'connected' if db.session.is_active else 'disconnected',
             'version': '1.0.0'
         })
     
@@ -57,7 +48,13 @@ def create_app():
                 '/api/auth/login',
                 '/api/auth/verify-otp',
                 '/api/payment/initialize',
-                '/api/vtpass/*',
+                '/api/plans/data',
+                '/api/plans/cable',
+                '/api/vtpass/airtime',
+                '/api/vtpass/data',
+                '/api/vtpass/electricity',
+                '/api/vtpass/cable-tv',
+                '/api/vtpass/exam-pins',
                 '/health'
             ]
         })
@@ -65,10 +62,11 @@ def create_app():
     # Create tables
     with app.app_context():
         db.create_all()
-        # In app.py, after db.create_all()
+        print("✅ Database tables created/verified")
+        
+        # Initialize plans (only if empty)
         from init_plans import init_all
-init_all() 
-        print("✅ Database tables ready")
+        init_all()
     
     return app
 
@@ -77,4 +75,4 @@ app = create_app()
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=Config.DEBUG) 
+    app.run(host='0.0.0.0', port=port, debug=Config.DEBUG)
