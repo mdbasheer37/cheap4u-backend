@@ -17,7 +17,7 @@ def create_app():
     # Import blueprints
     from auth import auth_bp
     from payment import payment_bp
-    #from vtpass import vtpass_bp
+    from routes import routes_bp
     from referral import referral_bp
     from admin import admin_bp
     from plans import plans_bp
