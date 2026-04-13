@@ -6,7 +6,7 @@ services:
     startCommand: gunicorn app:app
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.11.8
       - key: DATABASE_URL
         fromDatabase:
           name: cheap4u-db
@@ -26,4 +26,4 @@ services:
 
 databases:
   - name: cheap4u-db
-    plan: free
+    plan: free 
