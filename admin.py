@@ -1,3 +1,4 @@
+from flask import current_app
 from flask import Blueprint, request, jsonify
 from datetime import datetime, timedelta
 from models import db, User, Transaction, Profit, WithdrawalRequest
