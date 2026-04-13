@@ -8,4 +8,6 @@ bcrypt==4.0.1
 python-dateutil==2.8.2
 paystackapi==1.2.1
 gunicorn==21.2.0
-psycopg2-binary==2.9.9  # ← PostgreSQL support
+psycopg2-binary==2.9.10
+wheel==0.43.0
+setuptools>=65.5.1
