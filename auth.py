@@ -1,4 +1,5 @@
 # auth.py (corrected)
+from payment import create_paystack_customer, create_dedicated_virtual_account
 from flask import Blueprint, request, jsonify, current_app  # ✅ FIX: Added current_app import
 from datetime import datetime, timedelta
 from models import db, User, OTP
