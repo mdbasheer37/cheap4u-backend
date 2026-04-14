@@ -149,54 +149,6 @@ def verify_payment(reference):
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@payment_bp.route('/virtual-account', methods=['POST'])
-def create_virtual_account():
-    """Create virtual account for bank transfer (simplified)"""
-    data = request.get_json()
-    
-    email = data.get('email')
-    amount = data.get('amount')
-    
-    # In production, you would use Paystack's dynamic account API
-    # For now, return placeholder data
-    
-    return jsonify({
-        'status': 'success',
-        'data': {
-            'bank': {'name': 'Test Bank'},
-            'account_number': '0123456789',
-            'account_name': 'Test Account',
-            'reference': f'REF_{datetime.utcnow().timestamp()}',
-            'amount': amount
-        }
-    })
-
-@payment_bp.route('/webhook/paystack', methods=['POST'])
-def paystack_webhook():
-    """Handle Paystack webhook"""
-    data = request.get_json()
-    
-    if data.get('event') == 'charge.success':
-        reference = data['data']['reference']
-        
-        # Verify and process transaction
-        transaction = Transaction.query.filter_by(reference=reference).first()
-        
-        if transaction and transaction.status != 'success':
-            transaction.status = 'success'
-            
-            # Credit user wallet if applicable
-            if transaction.type == 'wallet_funding' and transaction.user_id:
-                user = User.query.get(transaction.user_id)
-                if user:
-                    user.wallet_balance += transaction.amount
-                    db.session.commit()
-            
-            db.session.commit()
-    
-    return jsonify({'status': 'success'}), 200 
-
-
 
 def create_paystack_customer(email, first_name, last_name, phone):
     """Create a Paystack customer and return customer_code."""
