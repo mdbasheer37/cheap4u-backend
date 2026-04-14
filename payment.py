@@ -262,3 +262,62 @@ def get_account_details():
             'account_name': user.virtual_account_name
         }
     })
+
+
+@payment_bp.route('/webhook', methods=['POST'])
+def paystack_webhook():
+    """Handle Paystack webhook events."""
+    # Verify signature
+    secret_key = current_app.config['PAYSTACK_SECRET_KEY']
+    signature = request.headers.get('x-paystack-signature')
+    if not signature:
+        return jsonify({'status': 'error', 'message': 'Missing signature'}), 401
+
+    body = request.get_data()
+    expected_signature = hmac.new(
+        secret_key.encode('utf-8'),
+        body,
+        hashlib.sha512
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected_signature):
+        return jsonify({'status': 'error', 'message': 'Invalid signature'}), 401
+
+    data = request.get_json()
+    event = data.get('event')
+
+    if event == 'charge.success':
+        charge_data = data['data']
+        reference = charge_data['reference']
+        amount = charge_data['amount'] / 100  # Convert from kobo
+        customer_code = charge_data['customer']['customer_code']
+        status = charge_data['status']
+
+        # Find user by paystack_customer_code
+        user = User.query.filter_by(paystack_customer_code=customer_code).first()
+        if not user:
+            return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+        # Check for duplicate transaction
+        existing = Transaction.query.filter_by(reference=reference).first()
+        if existing:
+            return jsonify({'status': 'success', 'message': 'Already processed'}), 200
+
+        # Credit wallet and record transaction
+        user.wallet_balance += amount
+        transaction = Transaction(
+            user_id=user.id,
+            reference=reference,
+            type='wallet_funding',
+            service_type='bank_transfer',
+            amount=amount,
+            status='success',
+            details={'source': 'virtual_account', 'customer_code': customer_code}
+        )
+        db.session.add(transaction)
+        db.session.commit()
+
+        return jsonify({'status': 'success', 'message': 'Wallet credited'}), 200
+
+    # Handle other events if needed
+    return jsonify({'status': 'success', 'message': 'Event ignored'}), 200
