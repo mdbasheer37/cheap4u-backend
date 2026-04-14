@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime
 import requests
+from flask import current_app 
 import json
 from models import db, User, Transaction, Profit
 from flask_jwt_extended import jwt_required, get_jwt_identity
