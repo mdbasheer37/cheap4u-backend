@@ -240,3 +240,23 @@ def create_dedicated_virtual_account(customer_code):
         }
     else:
         raise Exception(f"DVA creation failed: {data.get('message')}")
+
+# payment.py - Add route
+
+@payment_bp.route('/account-details', methods=['GET'])
+@jwt_required()
+def get_account_details():
+    """Return the user's virtual account details."""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+    return jsonify({
+        'status': 'success',
+        'data': {
+            'account_number': user.virtual_account_number,
+            'bank_name': user.virtual_bank_name,
+            'account_name': user.virtual_account_name
+        }
+    })
