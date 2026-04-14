@@ -25,7 +25,56 @@ def can_resend_otp(user_id):
     _otp_last_sent[user_id] = datetime.utcnow()
     return True
 
+@auth_bp.route('/set-pin', methods=['POST'])
+@jwt_required()
+def set_transaction_pin():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
 
+    data = request.get_json()
+    old_pin = data.get('old_pin')
+    new_pin = data.get('new_pin')
+
+    # If old_pin is provided, verify it (for changing)
+    if old_pin:
+        if not user.transaction_pin_hash:
+            return jsonify({'status': 'error', 'message': 'No PIN set yet'}), 400
+        if not bcrypt.checkpw(old_pin.encode('utf-8'), user.transaction_pin_hash.encode('utf-8')):
+            return jsonify({'status': 'error', 'message': 'Incorrect current PIN'}), 401
+
+    # Validate new PIN
+    if not new_pin or not new_pin.isdigit() or len(new_pin) < 4 or len(new_pin) > 6:
+        return jsonify({'status': 'error', 'message': 'PIN must be 4-6 digits'}), 400
+
+    # Hash and save
+    pin_hash = bcrypt.hashpw(new_pin.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    user.transaction_pin_hash = pin_hash
+    db.session.commit()
+
+    return jsonify({'status': 'success', 'message': 'Transaction PIN set successfully'})
+
+@auth_bp.route('/verify-pin', methods=['POST'])
+@jwt_required()
+def verify_transaction_pin():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+    data = request.get_json()
+    pin = data.get('pin')
+    if not pin:
+        return jsonify({'status': 'error', 'message': 'PIN required'}), 400
+
+    if not user.transaction_pin_hash:
+        return jsonify({'status': 'error', 'message': 'No PIN set. Please set a transaction PIN first.'}), 400
+
+    if bcrypt.checkpw(pin.encode('utf-8'), user.transaction_pin_hash.encode('utf-8')):
+        return jsonify({'status': 'success', 'message': 'PIN verified'})
+    else:
+        return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 401 
 
 @auth_bp.route('/register', methods=['POST'])
 def register():
