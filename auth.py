@@ -120,7 +120,25 @@ def register():
 
     db.session.add(user)
     db.session.commit()
+    try:
+        # Split name into first/last for Paystack
+        name_parts = name.split(' ', 1)
+        first_name = name_parts[0]
+        last_name = name_parts[1] if len(name_parts) > 1 else ''
 
+        customer_code = create_paystack_customer(email, first_name, last_name, phone)
+        user.paystack_customer_code = customer_code
+
+        dva = create_dedicated_virtual_account(customer_code)
+        user.virtual_account_number = dva['account_number']
+        user.virtual_bank_name = dva['bank_name']
+        user.virtual_account_name = dva['account_name']
+
+        db.session.commit()
+    except Exception as e:
+        # Log the error but don't fail registration
+        current_app.logger.error(f"DVA creation failed for user {user.id}: {str(e)}")
+        
     # ✅ FIX: Invalidate any existing active OTP for this user
     invalidate_existing_otps(user.id)
 
