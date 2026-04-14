@@ -193,3 +193,50 @@ def paystack_webhook():
             db.session.commit()
     
     return jsonify({'status': 'success'}), 200 
+
+
+
+def create_paystack_customer(email, first_name, last_name, phone):
+    """Create a Paystack customer and return customer_code."""
+    secret_key = current_app.config['PAYSTACK_SECRET_KEY']
+    url = "https://api.paystack.co/customer"
+    headers = {
+        "Authorization": f"Bearer {secret_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "email": email,
+        "first_name": first_name,
+        "last_name": last_name,
+        "phone": phone
+    }
+    response = requests.post(url, json=payload, headers=headers, timeout=30)
+    data = response.json()
+    if data.get('status'):
+        return data['data']['customer_code']
+    else:
+        raise Exception(f"Paystack customer creation failed: {data.get('message')}")
+
+def create_dedicated_virtual_account(customer_code):
+    """Create a dedicated virtual account for a customer."""
+    secret_key = current_app.config['PAYSTACK_SECRET_KEY']
+    url = "https://api.paystack.co/dedicated_account"
+    headers = {
+        "Authorization": f"Bearer {secret_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "customer": customer_code,
+        "preferred_bank": "wema-bank"  # You can change to "test-bank" for sandbox
+    }
+    response = requests.post(url, json=payload, headers=headers, timeout=30)
+    data = response.json()
+    if data.get('status'):
+        account = data['data']
+        return {
+            'account_number': account['account_number'],
+            'bank_name': account['bank']['name'],
+            'account_name': account['account_name']
+        }
+    else:
+        raise Exception(f"DVA creation failed: {data.get('message')}")
