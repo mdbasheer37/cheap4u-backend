@@ -21,7 +21,10 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime, default=datetime.utcnow)
     transaction_pin_hash = db.Column(db.String(200), nullable=True) 
- 
+    paystack_customer_code = db.Column(db.String(100), nullable=True)
+    virtual_account_number = db.Column(db.String(20), nullable=True)
+    virtual_bank_name = db.Column(db.String(100), nullable=True)
+    virtual_account_name = db.Column(db.String(100), nullable=True) 
     
     def set_password(self, password):
         salt = bcrypt.gensalt()
