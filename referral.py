@@ -3,6 +3,7 @@ from datetime import datetime
 from models import db, User, Referral, Transaction
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import func
+from models import ReferralTransaction
 
 referral_bp = Blueprint('referral', __name__, url_prefix='/api/referral')
 
@@ -141,3 +142,49 @@ def use_referral_bonus():
             'referral_balance': user.referral_balance
         }
     }) 
+
+# referral.py (additions)
+
+@referral_bp.route('/stats', methods=['GET'])
+@jwt_required()
+def referral_stats():
+    """Get referral statistics for the logged-in user."""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+    return jsonify({
+        'status': 'success',
+        'data': {
+            'total_referrals': user.total_referrals,
+            'total_earnings': user.referral_earnings,
+            'referral_code': user.referral_code,
+            'referral_link': f"https://cheap4u.technology/register?ref={user.referral_code}"
+        }
+    })
+
+@referral_bp.route('/history', methods=['GET'])
+@jwt_required()
+def referral_history():
+    """Get list of all referral transactions (bonus/commission) for the user."""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+    transactions = ReferralTransaction.query.filter_by(referrer_id=user_id)\
+                     .order_by(ReferralTransaction.created_at.desc()).all()
+
+    history = []
+    for tx in transactions:
+        referred_user = User.query.get(tx.referred_user_id)
+        history.append({
+            'id': tx.id,
+            'amount': tx.amount,
+            'type': tx.type,
+            'referred_user_name': referred_user.name if referred_user else 'Unknown',
+            'created_at': tx.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        })
+
+    return jsonify({'status': 'success', 'data': history}) 
