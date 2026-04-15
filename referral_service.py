@@ -20,3 +20,47 @@ def award_referral_commission(user, transaction_amount):
         )
         db.session.add(ref_tx)
         # Note: commit should be handled by the calling function 
+# payment.py (paystack_webhook modification)
+
+@payment_bp.route('/webhook/paystack', methods=['POST'])
+def paystack_webhook():
+    data = request.get_json()
+    if data.get('event') == 'charge.success':
+        reference = data['data']['reference']
+        transaction = Transaction.query.filter_by(reference=reference).first()
+        if transaction and transaction.status != 'success':
+            transaction.status = 'success'
+            if transaction.type == 'wallet_funding' and transaction.user_id:
+                user = User.query.get(transaction.user_id)
+                if user:
+                    # Check if this is the user's FIRST successful funding
+                    first_funding = not Transaction.query.filter(
+                        Transaction.user_id == user.id,
+                        Transaction.type == 'wallet_funding',
+                        Transaction.status == 'success'
+                    ).first()  # this query will return the current transaction as well? Need careful check.
+
+                    # Better: check if user.wallet_balance was 0 before? Or add a flag 'has_received_referral_bonus' on User.
+                    # We'll add a flag to User model: referral_bonus_claimed (boolean, default False)
+                    
+                    if not user.referral_bonus_claimed and user.referred_by_user_id:
+                        # Grant signup bonus
+                        referrer = User.query.get(user.referred_by_user_id)
+                        if referrer:
+                            bonus_amount = 10.0  # configurable
+                            referrer.referral_earnings += bonus_amount
+                            user.referral_bonus_claimed = True
+                            
+                            # Log the bonus transaction
+                            ref_tx = ReferralTransaction(
+                                referrer_id=referrer.id,
+                                referred_user_id=user.id,
+                                amount=bonus_amount,
+                                type='signup_bonus'
+                            )
+                            db.session.add(ref_tx)
+                    
+                    user.wallet_balance += transaction.amount
+            db.session.commit()
+    return jsonify({'status': 'success'}), 200 
+ 
