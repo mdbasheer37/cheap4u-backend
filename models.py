@@ -26,6 +26,13 @@ class User(db.Model):
     virtual_account_number = db.Column(db.String(20), nullable=True)
     virtual_bank_name = db.Column(db.String(100), nullable=True)
     virtual_account_name = db.Column(db.String(100), nullable=True) 
+    referred_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    referral_earnings = db.Column(db.Float, default=0.0)   # total commission earned
+    total_referrals = db.Column(db.Integer, default=0)     # number of users referred
+
+    # Relationship to referrer
+    referrer = db.relationship('User', remote_side=[id], backref='referred_users')
+
     
     def set_password(self, password):
         salt = bcrypt.gensalt()
