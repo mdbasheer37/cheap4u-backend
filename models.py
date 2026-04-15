@@ -158,3 +158,13 @@ class ElectricityProvider(db.Model):
     name = db.Column(db.String(100), nullable=False)         # "Abuja Electric AEDC"
     discount_percent = db.Column(db.Float, default=0.0)      # Discount you get from CheapDataHub (if any)
     created_at = db.Column(db.DateTime, default=datetime.utcnow) 
+
+class ReferralTransaction(db.Model):
+    """Log of all referral-related earnings (bonus/commission)."""
+    __tablename__ = 'referral_transactions'
+    id = db.Column(db.Integer, primary_key=True)
+    referrer_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    referred_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    type = db.Column(db.String(20), nullable=False)  # 'signup_bonus' or 'commission'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)  
