@@ -105,18 +105,32 @@ def register():
         return jsonify({'status': 'error', 'message': 'Phone number already registered'}), 400
 
     # Create user
+    referral_code = data.get('referral_code', '').strip()
+
+    # Find referrer if referral code provided
+    referrer = None
+    if referral_code:
+        referrer = User.query.filter_by(referral_code=referral_code).first()
+        if not referrer:
+            return jsonify({'status': 'error', 'message': 'Invalid referral code'}), 400
+
+    # Create user
     user = User(
         name=name,
         email=email,
         phone=phone,
         referral_code=generate_referral_code()
     )
-    user.set_password(password)   # ✅ bcrypt only, no frontend hashing
+    user.set_password(password)
 
-    if referral_code:
-        referrer = User.query.filter_by(referral_code=referral_code).first()
-        if referrer:
-            user.referred_by = referral_code
+    if referrer:
+        # Prevent self-referral (though impossible with code, but safety)
+        if referrer.id == user.id:
+            return jsonify({'status': 'error', 'message': 'Cannot refer yourself'}), 400
+        user.referred_by_user_id = referrer.id
+        # Increment referrer's total_referrals count
+        referrer.total_referrals += 1
+        db.session.add(referrer)
 
     db.session.add(user)
     db.session.commit()
