@@ -131,7 +131,7 @@ def buy_airtime(network, phone, amount, user_email):
                     amount=commission,
                     type='commission'
         )
-                    db.session.add(ref_tx)
+                db.session.add(ref_tx)
         # db.session.commit() will be called later or we can commit here? Better to let outer commit handle it. 
         return {
             "status": "success",
