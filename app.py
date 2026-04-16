@@ -73,6 +73,9 @@ def create_app():
 # For Gunicorn
 app = create_app()
 
+import logging
+logging.basicConfig(level=logging.DEBUG) 
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=Config.DEBUG)
