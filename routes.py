@@ -17,7 +17,7 @@ def purchase_airtime():
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
 
     if not user.is_active:
-    return jsonify({'status': 'error', 'message': 'Account is blocked'}), 403 
+        return jsonify({'status': 'error', 'message': 'Account is blocked'}), 403 
 
     data = request.get_json()
     pin = data.get('pin')
@@ -46,7 +46,10 @@ def purchase_data():
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
-
+        
+    if not user.is_active:
+        return jsonify({'status': 'error', 'message': 'Account is blocked'}), 403 
+    
     data = request.get_json()
     pin = data.get('pin')
     if not pin:
@@ -74,7 +77,10 @@ def purchase_electricity():
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
-
+        
+    if not user.is_active:
+        return jsonify({'status': 'error', 'message': 'Account is blocked'}), 403 
+    
     data = request.get_json()
     pin = data.get('pin')
     if not pin:
@@ -104,7 +110,10 @@ def purchase_cable_tv():
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
-
+        
+    if not user.is_active:
+        return jsonify({'status': 'error', 'message': 'Account is blocked'}), 403 
+    
     data = request.get_json()
     pin = data.get('pin')
     if not pin:
