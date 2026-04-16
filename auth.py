@@ -291,6 +291,10 @@ def login():
     if not user or not user.check_password(password):   # ✅ bcrypt check
         return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
 
+    # After user = User.query.filter_by(email=email).first()
+    if not user.is_active:
+        return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403 
+        
     if not user.is_verified:
         return jsonify({
             'status': 'error',
