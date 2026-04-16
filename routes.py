@@ -143,7 +143,10 @@ def purchase_exam_pins():
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
-
+        
+    if not user.is_active:
+        return jsonify({'status': 'error', 'message': 'Account is blocked'}), 403 
+    
     data = request.get_json()
     pin = data.get('pin')
     if not pin:
