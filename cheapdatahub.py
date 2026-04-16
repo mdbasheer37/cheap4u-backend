@@ -118,20 +118,20 @@ def buy_airtime(network, phone, amount, user_email):
 
         if user and user.referred_by_user_id:
     # Grant commission (e.g., 2% of selling price)
-          commission_rate = 0.02  # 2%
-          commission = selling_price * commission_rate
-          referrer = User.query.get(user.referred_by_user_id)
-          if referrer:
-             referrer.referral_earnings += commission
+            commission_rate = 0.02  # 2%
+            commission = selling_price * commission_rate
+            referrer = User.query.get(user.referred_by_user_id)
+            if referrer:
+                referrer.referral_earnings += commission
         
         # Log commission
-             ref_tx = ReferralTransaction(
-               referrer_id=referrer.id,
-               referred_user_id=user.id,
-               amount=commission,
-               type='commission'
+                ref_tx = ReferralTransaction(
+                    referrer_id=referrer.id,
+                    referred_user_id=user.id,
+                    amount=commission,
+                    type='commission'
         )
-              db.session.add(ref_tx)
+                    db.session.add(ref_tx)
         # db.session.commit() will be called later or we can commit here? Better to let outer commit handle it. 
         return {
             "status": "success",
