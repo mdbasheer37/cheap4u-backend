@@ -7,6 +7,8 @@ db = SQLAlchemy()
 class User(db.Model):
     __tablename__ = 'users'
 
+    role = db.Column(db.String(20), default='user')  # 'admin' or 'user'
+    is_active = db.Column(db.Boolean, default=True)
     # models.py User class addition
     referral_bonus_claimed = db.Column(db.Boolean, default=False)
     #referral_code = db.Column(db.String(20), unique=True) 
