@@ -1,89 +1,283 @@
-from flask import current_app
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime, timedelta
 from models import db, User, Transaction, Profit, WithdrawalRequest
-from sqlalchemy import func
+from sqlalchemy import func, case, extract
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from functools import wraps
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
 
-def is_admin(user_id):
-    """Check if user is admin"""
-    user = User.query.get(user_id)
-    if not user:
-        return False
-    return user.email in current_app.config['ADMIN_EMAILS']
+def admin_required(f):
+    """Decorator to verify JWT and admin role"""
+    @wraps(f)
+    @jwt_required()
+    def decorated(*args, **kwargs):
+        user_id = get_jwt_identity()
+        user = User.query.get(user_id)
+        if not user or user.role != 'admin':
+            return jsonify({'status': 'error', 'message': 'Admin access required'}), 403
+        if not user.is_active:
+            return jsonify({'status': 'error', 'message': 'Account is blocked'}), 403
+        return f(*args, **kwargs)
+    return decorated
 
+# ==================================================
+# USER MANAGEMENT
+# ==================================================
+@admin_bp.route('/users', methods=['GET'])
+@admin_required
+def get_all_users():
+    """Return all users with essential fields"""
+    users = User.query.all()
+    return jsonify({
+        'status': 'success',
+        'data': [{
+            'id': u.id,
+            'name': u.name,
+            'email': u.email,
+            'phone': u.phone,
+            'wallet_balance': u.wallet_balance,
+            'referral_balance': u.referral_balance,
+            'is_active': u.is_active,
+            'is_verified': u.is_verified,
+            'role': u.role,
+            'created_at': u.created_at.isoformat() if u.created_at else None
+        } for u in users]
+    })
+
+@admin_bp.route('/users/<int:user_id>/block', methods=['POST'])
+@admin_required
+def block_user(user_id):
+    """Set user is_active = False"""
+    user = User.query.get_or_404(user_id)
+    user.is_active = False
+    db.session.commit()
+    return jsonify({'status': 'success', 'message': f'User {user.email} blocked'})
+
+@admin_bp.route('/users/<int:user_id>/unblock', methods=['POST'])
+@admin_required
+def unblock_user(user_id):
+    """Set user is_active = True"""
+    user = User.query.get_or_404(user_id)
+    user.is_active = True
+    db.session.commit()
+    return jsonify({'status': 'success', 'message': f'User {user.email} unblocked'})
+
+# ==================================================
+# TRANSACTIONS OVERVIEW
+# ==================================================
+@admin_bp.route('/transactions', methods=['GET'])
+@admin_required
+def get_all_transactions():
+    """Return all transactions with filtering"""
+    # Filter parameters
+    service_type = request.args.get('service_type')
+    status = request.args.get('status')
+    start_date = request.args.get('start_date')  # format YYYY-MM-DD
+    end_date = request.args.get('end_date')
+    
+    query = Transaction.query.join(User, Transaction.user_id == User.id, isouter=True)
+    
+    if service_type:
+        query = query.filter(Transaction.service_type == service_type)
+    if status:
+        query = query.filter(Transaction.status == status)
+    if start_date:
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d')
+            query = query.filter(Transaction.created_at >= start)
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            end = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+            query = query.filter(Transaction.created_at < end)
+        except ValueError:
+            pass
+    
+    transactions = query.order_by(Transaction.created_at.desc()).limit(1000).all()
+    
+    return jsonify({
+        'status': 'success',
+        'data': [{
+            'id': t.id,
+            'user': {
+                'id': t.user.id if t.user else None,
+                'name': t.user.name if t.user else 'Guest',
+                'email': t.user.email if t.user else None
+            },
+            'reference': t.reference,
+            'type': t.type,
+            'service_type': t.service_type,
+            'amount': t.amount,
+            'profit': t.profit,
+            'status': t.status,
+            'created_at': t.created_at.isoformat(),
+            'details': t.details
+        } for t in transactions]
+    })
+
+# ==================================================
+# PROFIT TRACKING
+# ==================================================
 @admin_bp.route('/profit', methods=['GET'])
-def get_profit():
-    """Get admin profit data"""
-    user_email = request.args.get('user_email')
+@admin_required
+def get_profit_summary():
+    """Return total profit, withdrawn, available, by category"""
+    # Total profit earned (all profits from successful transactions)
+    total_profit = db.session.query(func.sum(Profit.amount)).scalar() or 0.0
     
-    if not user_email:
-        return jsonify({'status': 'error', 'message': 'User email required'}), 400
+    # Total withdrawn (completed withdrawals)
+    total_withdrawn = db.session.query(func.sum(WithdrawalRequest.amount)).filter(
+        WithdrawalRequest.status == 'completed'
+    ).scalar() or 0.0
     
-    user = User.query.filter_by(email=user_email).first()
+    available_balance = total_profit - total_withdrawn
     
-    if not user or user.email not in current_app.config['ADMIN_EMAILS']:
-        return jsonify({'status': 'error', 'message': 'Admin access required'}), 403
-    
-    # Get total profit
-    total_profit = db.session.query(func.sum(Profit.amount)).scalar() or 0
-    
-    # Get profit by category
-    profit_by_category = db.session.query(
+    # Profit by category
+    category_profits = db.session.query(
         Profit.category,
-        func.sum(Profit.amount).label('total'),
-        func.count(Profit.id).label('count')
+        func.sum(Profit.amount).label('total')
     ).group_by(Profit.category).all()
     
-    # Format category data
-    categories = {}
-    for cat in profit_by_category:
-        categories[cat.category] = {
-            'amount': float(cat.total),
-            'count': cat.count
-        }
+    profit_by_category = {
+        'airtime': 0.0,
+        'data': 0.0,
+        'electricity': 0.0,
+        'cable_tv': 0.0,
+        'exam_pin': 0.0
+    }
+    for cat, amount in category_profits:
+        profit_by_category[cat] = float(amount)
     
     return jsonify({
         'status': 'success',
         'data': {
-            'total_available': float(total_profit),
-            'total_earned': float(total_profit),
-            'by_category': categories
+            'total_profit': float(total_profit),
+            'total_withdrawn': float(total_withdrawn),
+            'available_balance': float(available_balance),
+            'profit_by_category': profit_by_category
         }
     })
 
-@admin_bp.route('/profit/withdraw', methods=['POST'])
-def withdraw_profit():
-    """Process profit withdrawal"""
-    data = request.get_json()
+# ==================================================
+# WALLET / SYSTEM BALANCE
+# ==================================================
+@admin_bp.route('/wallet-summary', methods=['GET'])
+@admin_required
+def get_wallet_summary():
+    """Total money in system (sum of all user wallets)"""
+    total_user_wallet = db.session.query(func.sum(User.wallet_balance)).scalar() or 0.0
     
-    user_email = data.get('user_email')
+    # Total profit earned (same as above)
+    total_profit = db.session.query(func.sum(Profit.amount)).scalar() or 0.0
+    total_withdrawn = db.session.query(func.sum(WithdrawalRequest.amount)).filter(
+        WithdrawalRequest.status == 'completed'
+    ).scalar() or 0.0
+    available_profit = total_profit - total_withdrawn
+    
+    return jsonify({
+        'status': 'success',
+        'data': {
+            'total_money_in_system': float(total_user_wallet),
+            'total_profit': float(total_profit),
+            'available_profit': float(available_profit)
+        }
+    })
+
+# ==================================================
+# STATISTICS (ANALYTICS)
+# ==================================================
+@admin_bp.route('/stats', methods=['GET'])
+@admin_required
+def get_sales_stats():
+    """Daily, weekly, monthly sales grouped by service type"""
+    today = datetime.utcnow().date()
+    
+    def get_stats_for_period(start_date, end_date):
+        # Query transactions for period grouped by service_type
+        results = db.session.query(
+            Transaction.service_type,
+            func.sum(Transaction.amount).label('total_sales'),
+            func.count(Transaction.id).label('count')
+        ).filter(
+            Transaction.created_at >= start_date,
+            Transaction.created_at < end_date,
+            Transaction.status == 'success'
+        ).group_by(Transaction.service_type).all()
+        
+        stats = {
+            'airtime': {'sales': 0, 'count': 0},
+            'data': {'sales': 0, 'count': 0},
+            'electricity': {'sales': 0, 'count': 0},
+            'cable_tv': {'sales': 0, 'count': 0},
+            'exam_pin': {'sales': 0, 'count': 0}
+        }
+        for service, sales, count in results:
+            if service in stats:
+                stats[service] = {'sales': float(sales), 'count': count}
+        return stats
+    
+    # Daily (today)
+    daily_start = datetime.combine(today, datetime.min.time())
+    daily_end = daily_start + timedelta(days=1)
+    daily_stats = get_stats_for_period(daily_start, daily_end)
+    
+    # Weekly (last 7 days including today)
+    weekly_start = daily_start - timedelta(days=6)
+    weekly_stats = get_stats_for_period(weekly_start, daily_end)
+    
+    # Monthly (current month)
+    monthly_start = datetime(today.year, today.month, 1)
+    if today.month == 12:
+        monthly_end = datetime(today.year + 1, 1, 1)
+    else:
+        monthly_end = datetime(today.year, today.month + 1, 1)
+    monthly_stats = get_stats_for_period(monthly_start, monthly_end)
+    
+    return jsonify({
+        'status': 'success',
+        'data': {
+            'daily': daily_stats,
+            'weekly': weekly_stats,
+            'monthly': monthly_stats
+        }
+    })
+
+# ==================================================
+# WITHDRAWAL SYSTEM (ADMIN)
+# ==================================================
+@admin_bp.route('/withdraw', methods=['POST'])
+@admin_required
+def request_withdrawal():
+    """Create withdrawal request (admin only)"""
+    data = request.get_json()
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
     amount = data.get('amount')
     bank_details = data.get('bank_details', {})
     
-    if not user_email or not amount:
-        return jsonify({'status': 'error', 'message': 'Email and amount required'}), 400
+    if not amount:
+        return jsonify({'status': 'error', 'message': 'Amount required'}), 400
     
-    user = User.query.filter_by(email=user_email).first()
+    # Check available profit balance
+    total_profit = db.session.query(func.sum(Profit.amount)).scalar() or 0.0
+    total_withdrawn = db.session.query(func.sum(WithdrawalRequest.amount)).filter(
+        WithdrawalRequest.status == 'completed'
+    ).scalar() or 0.0
+    available = total_profit - total_withdrawn
     
-    if not user or user.email not in current_app.config['ADMIN_EMAILS']:
-        return jsonify({'status': 'error', 'message': 'Admin access required'}), 403
+    if float(amount) > available:
+        return jsonify({'status': 'error', 'message': 'Insufficient available profit'}), 400
     
-    # Check if enough profit available
-    total_profit = db.session.query(func.sum(Profit.amount)).scalar() or 0
-    
-    if amount > total_profit:
-        return jsonify({'status': 'error', 'message': 'Insufficient profit balance'}), 400
-    
-    if amount < 1000:
+    if float(amount) < 1000:
         return jsonify({'status': 'error', 'message': 'Minimum withdrawal is ₦1,000'}), 400
     
     # Create withdrawal request
     withdrawal = WithdrawalRequest(
         user_id=user.id,
-        amount=amount,
+        amount=float(amount),
         bank_name=bank_details.get('bank_name'),
         account_number=bank_details.get('account_number'),
         account_name=bank_details.get('account_name'),
@@ -98,7 +292,7 @@ def withdraw_profit():
         reference=f"WDL_{datetime.utcnow().timestamp()}",
         type='withdrawal',
         service_type='profit_withdrawal',
-        amount=amount,
+        amount=float(amount),
         status='pending',
         details={'withdrawal_id': withdrawal.id}
     )
@@ -107,36 +301,60 @@ def withdraw_profit():
     
     return jsonify({
         'status': 'success',
-        'message': 'Withdrawal request submitted successfully',
+        'message': 'Withdrawal request submitted',
         'data': {'withdrawal_id': withdrawal.id}
     })
 
+@admin_bp.route('/withdraw/<int:withdrawal_id>/approve', methods=['POST'])
+@admin_required
+def approve_withdrawal(withdrawal_id):
+    """Approve withdrawal and mark as completed"""
+    withdrawal = WithdrawalRequest.query.get_or_404(withdrawal_id)
+    if withdrawal.status != 'pending':
+        return jsonify({'status': 'error', 'message': 'Withdrawal already processed'}), 400
+    
+    withdrawal.status = 'completed'
+    withdrawal.processed_at = datetime.utcnow()
+    
+    # Update linked transaction
+    transaction = Transaction.query.filter_by(
+        user_id=withdrawal.user_id,
+        details={'withdrawal_id': withdrawal.id}
+    ).first()
+    if transaction:
+        transaction.status = 'success'
+    
+    db.session.commit()
+    
+    return jsonify({'status': 'success', 'message': f'Withdrawal #{withdrawal_id} approved'})
+
 @admin_bp.route('/withdrawals', methods=['GET'])
-def get_withdrawals():
-    """Get withdrawal history"""
-    user_email = request.args.get('user_email')
+@admin_required
+def list_withdrawals():
+    """List all withdrawal requests with filters"""
+    status = request.args.get('status')
+    query = WithdrawalRequest.query.join(User)
     
-    if not user_email:
-        return jsonify({'status': 'error', 'message': 'User email required'}), 400
+    if status:
+        query = query.filter(WithdrawalRequest.status == status)
     
-    user = User.query.filter_by(email=user_email).first()
-    
-    if not user or user.email not in current_app.config['ADMIN_EMAILS']:
-        return jsonify({'status': 'error', 'message': 'Admin access required'}), 403
-    
-    withdrawals = WithdrawalRequest.query.filter_by(user_id=user.id).order_by(
-        WithdrawalRequest.created_at.desc()
-    ).all()
+    withdrawals = query.order_by(WithdrawalRequest.created_at.desc()).all()
     
     return jsonify({
         'status': 'success',
         'data': [{
             'id': w.id,
+            'user': {
+                'id': w.user.id,
+                'name': w.user.name,
+                'email': w.user.email
+            },
             'amount': w.amount,
-            'status': w.status,
             'bank_name': w.bank_name,
             'account_number': w.account_number,
             'account_name': w.account_name,
-            'created_at': w.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            'status': w.status,
+            'created_at': w.created_at.isoformat(),
+            'processed_at': w.processed_at.isoformat() if w.processed_at else None
         } for w in withdrawals]
-    }) 
+    })
