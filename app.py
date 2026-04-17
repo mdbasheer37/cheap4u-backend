@@ -1,3 +1,4 @@
+# app.py
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
@@ -5,31 +6,34 @@ from config import Config
 from models import db
 import os
 
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
-    
+
     # Initialize extensions
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # Restrict CORS to your frontend domain in production
+    CORS(app, resources={r"/api/*": {"origins": os.getenv("ALLOWED_ORIGINS", "*")}})
     db.init_app(app)
-    jwt = JWTManager(app)
-    
+    JWTManager(app)
+
     # Import blueprints
     from auth import auth_bp
     from payment import payment_bp
     from routes import vtpass_bp
     from referral import referral_bp
-    from admin import admin_bp
+    from admin import admin_bp       # admin_bp already has url_prefix='/api/admin' set
     from plans import plans_bp
-    
-    app.register_blueprint(auth_bp, url_prefix='/api/auth')
-    app.register_blueprint(payment_bp, url_prefix='/api/payment')
+
+    # Fixed: do NOT pass url_prefix here for admin_bp — it sets its own prefix.
+    # All other blueprints also use their own prefixes so no url_prefix needed.
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(payment_bp)
     app.register_blueprint(vtpass_bp)
     app.register_blueprint(referral_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(plans_bp)
-    
-    # Health check
+
     @app.route('/health', methods=['GET'])
     def health_check():
         return jsonify({
@@ -38,7 +42,7 @@ def create_app():
             'database': 'connected' if db.session.is_active else 'disconnected',
             'version': '1.0.0'
         })
-    
+
     @app.route('/', methods=['GET'])
     def index():
         return jsonify({
@@ -58,23 +62,18 @@ def create_app():
                 '/health'
             ]
         })
-    
-    # Create tables
+
     with app.app_context():
         db.create_all()
         print("✅ Database tables created/verified")
-        
-        # Initialize plans (only if empty)
         from init_plans import init_all
         init_all()
-    
+
     return app
+
 
 # For Gunicorn
 app = create_app()
-
-import logging
-logging.basicConfig(level=logging.DEBUG) 
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
