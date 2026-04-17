@@ -156,17 +156,25 @@ def register():
 
     message = f"Your Cheap4u verification code is {otp_code}. It expires in 10 minutes."
     sms_sent = send_sms(phone, message)
+
     if not sms_sent:
-        current_app.logger.warning(f"SMS failed for {phone}, proceeding with mock OTP")
+        current_app.logger.error(f"OTP SMS failed for {phone}.")
+        return jsonify({
+            'status': 'error',
+            'message': (
+                'Account created but we could not send the verification SMS. '
+                'Please try resending the OTP or contact support.'
+            ),
+            'data': {'user_id': user.id, 'phone': phone}
+        }), 500
 
     return jsonify({
         'status': 'success',
-        'message': 'User registered. OTP sent to your phone.',
+        'message': 'Registration successful. OTP sent to your phone.',
         'data': {
             'user_id': user.id,
             'email': email,
             'phone': phone,
-            'mock_otp': otp_code if not sms_sent or current_app.config.get('DEBUG') else None
         }
     })
 
@@ -241,12 +249,16 @@ def resend_otp():
     message = f"Your Cheap4u verification code is {otp_code}. It expires in 10 minutes."
     sms_sent = send_sms(user.phone, message)
 
+    if not sms_sent:
+        current_app.logger.error(f"OTP resend SMS failed for {user.phone}.")
+        return jsonify({
+            'status': 'error',
+            'message': 'Could not resend OTP. Please check your phone number or contact support.'
+        }), 500
+
     return jsonify({
         'status': 'success',
-        'message': 'OTP resent successfully',
-        'data': {
-            'mock_otp': otp_code if not sms_sent or current_app.config.get('DEBUG') else None
-        }
+        'message': 'OTP resent. Please check your phone.',
     })
 
 
