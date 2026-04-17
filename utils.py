@@ -21,7 +21,7 @@ def send_sms(phone, message):
         print(f"⚠️ SMS would be sent to {phone}: {message}")
         return True
     
-    url = "https://api.ng.termii.com/api/sms/send"
+    url = "https://api.termii.com/api/sms/send"
     payload = {
         "to": phone,
         "from": sender_id,
