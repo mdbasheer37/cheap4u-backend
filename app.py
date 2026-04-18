@@ -24,6 +24,7 @@ def create_app():
     from referral import referral_bp
     from admin import admin_bp       # admin_bp already has url_prefix='/api/admin' set
     from plans import plans_bp
+    from debug_routes import debug_bp  # TEMPORARY — remove after SMS is working
 
     # Fixed: do NOT pass url_prefix here for admin_bp — it sets its own prefix.
     # All other blueprints also use their own prefixes so no url_prefix needed.
@@ -33,6 +34,7 @@ def create_app():
     app.register_blueprint(referral_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(plans_bp)
+    app.register_blueprint(debug_bp)  # TEMPORARY — remove after SMS is working
 
     @app.route('/health', methods=['GET'])
     def health_check():
