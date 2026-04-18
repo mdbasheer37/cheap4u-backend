@@ -4,14 +4,13 @@ import string
 import re
 import requests
 import logging
-from datetime import datetime, timedelta
 from flask import current_app
 
 logger = logging.getLogger(__name__)
 
 
 def generate_referral_code():
-    """Generate a unique referral code."""
+    """Generate a unique 8-character referral code."""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
 
@@ -33,38 +32,32 @@ def validate_email(email):
 
 def validate_phone(phone):
     """Validate Nigerian phone number — must be exactly 11 digits."""
-    return len(phone) == 11 and phone.isdigit()
+    return len(str(phone)) == 11 and str(phone).isdigit()
 
 
-def send_sms(phone, message):
+def _to_international(phone):
     """
-    Send a real SMS via the Termii API.
-
-    Returns True on success, False on any failure.
-    Errors are logged so they appear in Render logs.
-
-    Key fixes vs original code:
-    - Phone converted to international format (Termii rejects 0XXXXXXXXXX)
-    - channel = "dnd"  (transactional/OTP route — generic is promotional only)
-    - Content-Type header included (required by Termii)
-    - Response checked by body message, not just HTTP status code
-    - No mock OTP is ever returned — SMS must succeed for verification to proceed
+    Convert Nigerian phone number to Termii's required international format.
+    '08012345678'    → '2348012345678'
+    '2348012345678'  → '2348012345678'
+    '+2348012345678' → '2348012345678'
+    Returns None for unrecognised formats.
     """
-    api_key = current_app.config.get('TERMII_API_KEY', '').strip()
-    sender_id = current_app.config.get('TERMII_SENDER_ID', 'Cheap4uApp').strip()
+    phone = str(phone).strip().replace(" ", "").replace("-", "")
+    if phone.startswith("0") and len(phone) == 11 and phone.isdigit():
+        return "234" + phone[1:]
+    elif phone.startswith("234") and len(phone) == 13 and phone.isdigit():
+        return phone
+    elif phone.startswith("+234") and len(phone) == 14 and phone[1:].isdigit():
+        return phone[1:]
+    return None
 
-    if not api_key:
-        logger.error(
-            "❌ TERMII_API_KEY is not set in environment variables. "
-            "Go to Render Dashboard → Your Service → Environment → Add TERMII_API_KEY"
-        )
-        return False
 
-    phone_intl = _to_international(phone)
-    if not phone_intl:
-        logger.error(f"❌ Cannot convert phone number to international format: {phone}")
-        return False
-
+def _try_send(api_key, phone_intl, sender_id, channel, message):
+    """
+    Make a single Termii SMS API call.
+    Returns (True, data) on success, (False, data) on failure.
+    """
     url = "https://api.ng.termii.com/api/sms/send"
     payload = {
         "api_key": api_key,
@@ -72,55 +65,90 @@ def send_sms(phone, message):
         "from": sender_id,
         "sms": message,
         "type": "plain",
-        "channel": "dnd",   # MUST be "dnd" for OTP/transactional messages
+        "channel": channel,
     }
     headers = {"Content-Type": "application/json"}
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=15)
-
         try:
             data = response.json()
         except Exception:
             data = {}
-
-        logger.info(f"Termii response [{response.status_code}] to {phone_intl}: {data}")
-
+        logger.info(
+            f"Termii [{channel}] sender={sender_id} → {phone_intl} "
+            f"HTTP {response.status_code}: {data}"
+        )
         if response.status_code == 200 and data.get("message") == "Successfully Sent":
-            logger.info(f"✅ OTP SMS sent to {phone_intl}")
-            return True
+            return True, data
+        return False, data
+    except requests.exceptions.Timeout:
+        logger.error(f"Termii timeout [{channel}] → {phone_intl}")
+        return False, {"error": "timeout"}
+    except Exception as e:
+        logger.error(f"Termii exception [{channel}] → {phone_intl}: {e}")
+        return False, {"error": str(e)}
 
+
+def send_sms(phone, message):
+    """
+    Send a real OTP SMS via Termii with automatic fallback strategy:
+
+    Attempt 1: Custom sender ID (e.g. "Cheap4uApp") on DND channel
+               — works if your Sender ID is approved for DND
+    Attempt 2: "N-Alert" sender ID on DND channel
+               — N-Alert is Termii's pre-approved universal transactional sender,
+                 always works without any approval needed
+    Attempt 3: "N-Alert" sender ID on generic channel
+               — final fallback for non-DND numbers
+
+    This means SMS will be delivered regardless of whether your custom
+    Sender ID is approved or the number is on DND list.
+
+    Returns True if any attempt succeeds, False if all fail.
+    """
+    api_key = current_app.config.get('TERMII_API_KEY', '').strip()
+    custom_sender = current_app.config.get('TERMII_SENDER_ID', 'Cheap4uApp').strip()
+
+    if not api_key:
         logger.error(
-            f"❌ Termii SMS failed for {phone_intl}. "
-            f"HTTP {response.status_code}. Body: {data}"
+            "❌ TERMII_API_KEY is not set. "
+            "Add it in Render Dashboard → Environment → TERMII_API_KEY"
         )
         return False
 
-    except requests.exceptions.Timeout:
-        logger.error(f"❌ Termii request timed out for {phone_intl}")
-        return False
-    except requests.exceptions.ConnectionError as e:
-        logger.error(f"❌ Termii connection error for {phone_intl}: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"❌ Unexpected error sending SMS to {phone_intl}: {e}")
+    phone_intl = _to_international(phone)
+    if not phone_intl:
+        logger.error(f"❌ Invalid phone number: {phone}")
         return False
 
+    # Attempt 1: custom sender ID on DND route
+    if custom_sender and custom_sender != 'N-Alert':
+        ok, data = _try_send(api_key, phone_intl, custom_sender, "dnd", message)
+        if ok:
+            logger.info(f"✅ SMS sent via custom sender [{custom_sender}/dnd]")
+            return True
+        logger.warning(
+            f"⚠️  Custom sender [{custom_sender}/dnd] failed: {data}. "
+            f"Trying N-Alert/dnd fallback..."
+        )
 
-def _to_international(phone):
-    """
-    Convert a Nigerian phone number to international format.
-    '08012345678'  → '2348012345678'
-    '2348012345678' → '2348012345678'  (already correct)
-    Returns None if the number is invalid.
-    """
-    phone = str(phone).strip().replace(" ", "").replace("-", "")
+    # Attempt 2: N-Alert on DND route (always approved, works on all numbers)
+    ok, data = _try_send(api_key, phone_intl, "N-Alert", "dnd", message)
+    if ok:
+        logger.info("✅ SMS sent via N-Alert/dnd")
+        return True
+    logger.warning(f"⚠️  N-Alert/dnd failed: {data}. Trying N-Alert/generic fallback...")
 
-    if phone.startswith("0") and len(phone) == 11 and phone.isdigit():
-        return "234" + phone[1:]  # strip leading 0, prepend 234
-    elif phone.startswith("234") and len(phone) == 13 and phone.isdigit():
-        return phone  # already in international format
-    elif phone.startswith("+234") and len(phone) == 14 and phone[1:].isdigit():
-        return phone[1:]  # strip the + sign
-    else:
-        return None  # unrecognised format
+    # Attempt 3: N-Alert on generic route (last resort)
+    ok, data = _try_send(api_key, phone_intl, "N-Alert", "generic", message)
+    if ok:
+        logger.info("✅ SMS sent via N-Alert/generic")
+        return True
+
+    logger.error(
+        f"❌ All 3 SMS attempts failed for {phone_intl}. "
+        f"Last error: {data}. "
+        f"Check your TERMII_API_KEY balance and account status at accounts.termii.com"
+    )
+    return False
