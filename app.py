@@ -11,30 +11,35 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # Initialize extensions
-    # Restrict CORS to your frontend domain in production
     CORS(app, resources={r"/api/*": {"origins": os.getenv("ALLOWED_ORIGINS", "*")}})
     db.init_app(app)
     JWTManager(app)
 
-    # Import blueprints
     from auth import auth_bp
     from payment import payment_bp
-    from routes import vtpass_bp
     from referral import referral_bp
-    from admin import admin_bp       # admin_bp already has url_prefix='/api/admin' set
+    from admin import admin_bp
     from plans import plans_bp
-    from debug_routes import debug_bp  # TEMPORARY — remove after SMS is working
 
-    # Fixed: do NOT pass url_prefix here for admin_bp — it sets its own prefix.
-    # All other blueprints also use their own prefixes so no url_prefix needed.
+    # Support both filename conventions: routes.py (new) or vtpass.py (original)
+    try:
+        from routes import vtpass_bp
+    except ImportError:
+        from vtpass import vtpass_bp
+
     app.register_blueprint(auth_bp)
     app.register_blueprint(payment_bp)
     app.register_blueprint(vtpass_bp)
     app.register_blueprint(referral_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(plans_bp)
-    app.register_blueprint(debug_bp)  # TEMPORARY — remove after SMS is working
+
+    # TEMPORARY debug blueprint — remove after SMS is confirmed working
+    try:
+        from debug_routes import debug_bp
+        app.register_blueprint(debug_bp)
+    except ImportError:
+        pass
 
     @app.route('/health', methods=['GET'])
     def health_check():
@@ -74,7 +79,6 @@ def create_app():
     return app
 
 
-# For Gunicorn
 app = create_app()
 
 if __name__ == '__main__':
