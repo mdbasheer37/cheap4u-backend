@@ -1,10 +1,12 @@
 # app.py
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from config import Config
 from models import db
 import os
+import requests as http_requests
+import importlib
 
 
 def create_app():
@@ -25,9 +27,7 @@ def create_app():
     vtpass_bp = None
     for mod_name in ('vtpass', 'routes'):
         try:
-            import importlib
             mod = importlib.import_module(mod_name)
-            # Get whichever blueprint name exists in that module
             for attr in ('vtpass_bp', 'bp', 'main'):
                 if hasattr(mod, attr):
                     vtpass_bp = getattr(mod, attr)
@@ -42,28 +42,91 @@ def create_app():
     app.register_blueprint(payment_bp)
     if vtpass_bp:
         app.register_blueprint(vtpass_bp)
-    else:
-        print("⚠️  vtpass blueprint not found — vtpass routes will be unavailable")
     app.register_blueprint(referral_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(plans_bp)
 
-    # TEMPORARY debug blueprint — remove after SMS is confirmed working
-    try:
-        from debug_routes import debug_bp
-        app.register_blueprint(debug_bp)
-        print("✅ Debug routes loaded")
-    except ImportError:
-        pass
+    # ----------------------------------------------------------------
+    # TEMPORARY DEBUG ROUTES — built directly into app.py
+    # Delete these 2 routes once SMS is working
+    # ----------------------------------------------------------------
+
+    def _to_intl(phone):
+        phone = str(phone).strip().replace(" ", "").replace("-", "")
+        if phone.startswith("0") and len(phone) == 11 and phone.isdigit():
+            return "234" + phone[1:]
+        elif phone.startswith("234") and len(phone) == 13 and phone.isdigit():
+            return phone
+        elif phone.startswith("+234") and len(phone) == 14 and phone[1:].isdigit():
+            return phone[1:]
+        return None
+
+    @app.route('/api/debug/check-config', methods=['GET'])
+    def debug_check_config():
+        api_key = app.config.get('TERMII_API_KEY', '').strip()
+        return jsonify({
+            'TERMII_API_KEY': (api_key[:6] + '...' + api_key[-4:]) if len(api_key) > 10 else ('SET_BUT_SHORT' if api_key else 'NOT_SET'),
+            'TERMII_SENDER_ID': app.config.get('TERMII_SENDER_ID', 'NOT SET'),
+            'DEBUG': app.config.get('DEBUG'),
+            'key_length': len(api_key),
+        })
+
+    @app.route('/api/debug/test-sms', methods=['POST'])
+    def debug_test_sms():
+        data = request.get_json() or {}
+        phone_raw = data.get('phone', '09037663816')
+        api_key = app.config.get('TERMII_API_KEY', '').strip()
+        sender_id = app.config.get('TERMII_SENDER_ID', 'Cheap4uApp').strip()
+
+        if not api_key:
+            return jsonify({'error': 'TERMII_API_KEY not set in Render environment'}), 500
+
+        phone_intl = _to_intl(phone_raw)
+        if not phone_intl:
+            return jsonify({'error': f'Bad phone format: {phone_raw}'}), 400
+
+        results = []
+        for sender, channel in [(sender_id, 'dnd'), ('N-Alert', 'dnd'), ('N-Alert', 'generic')]:
+            try:
+                r = http_requests.post(
+                    'https://api.ng.termii.com/api/sms/send',
+                    json={
+                        'api_key': api_key,
+                        'to': phone_intl,
+                        'from': sender,
+                        'sms': f'Cheap4u test OTP: 123456',
+                        'type': 'plain',
+                        'channel': channel,
+                    },
+                    headers={'Content-Type': 'application/json'},
+                    timeout=15
+                )
+                try:
+                    body = r.json()
+                except Exception:
+                    body = r.text
+                success = r.status_code == 200 and isinstance(body, dict) and body.get('message') == 'Successfully Sent'
+                results.append({
+                    'sender': sender,
+                    'channel': channel,
+                    'http_status': r.status_code,
+                    'termii_response': body,
+                    'success': success
+                })
+                if success:
+                    return jsonify({'result': 'SMS_SENT', 'via': f'{sender}/{channel}', 'attempts': results})
+            except Exception as e:
+                results.append({'sender': sender, 'channel': channel, 'error': str(e), 'success': False})
+
+        return jsonify({'result': 'ALL_FAILED', 'attempts': results}), 500
+
+    # ----------------------------------------------------------------
+    # END DEBUG ROUTES
+    # ----------------------------------------------------------------
 
     @app.route('/health', methods=['GET'])
     def health_check():
-        return jsonify({
-            'status': 'healthy',
-            'message': 'Backend is running',
-            'database': 'connected' if db.session.is_active else 'disconnected',
-            'version': '1.0.0'
-        })
+        return jsonify({'status': 'healthy', 'message': 'Backend is running', 'version': '1.0.0'})
 
     @app.route('/', methods=['GET'])
     def index():
