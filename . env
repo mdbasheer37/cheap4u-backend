@@ -40,7 +40,7 @@ PROFIT_MARGIN_CABLE_TV=5
 PROFIT_MARGIN_EXAM_PIN=10 
 
 # Termii - Optional for testing (leave blank to skip SMS)
-TERMII_API_KEY=
+TERMII_API_KEY=TLmOQIYHvwkjuJBhrEShfyjuyQzurtvWXwXeSoeUseuiWRLwHHpqjWnfHpZUWn 
 TERMII_SENDER_ID=Cheap4uApp
 
 # App URL
