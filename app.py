@@ -21,15 +21,29 @@ def create_app():
     from admin import admin_bp
     from plans import plans_bp
 
-    # Support both filename conventions: routes.py (new) or vtpass.py (original)
-    try:
-        from routes import vtpass_bp
-    except ImportError:
-        from vtpass import vtpass_bp
+    # Import vtpass blueprint — try every possible filename
+    vtpass_bp = None
+    for mod_name in ('vtpass', 'routes'):
+        try:
+            import importlib
+            mod = importlib.import_module(mod_name)
+            # Get whichever blueprint name exists in that module
+            for attr in ('vtpass_bp', 'bp', 'main'):
+                if hasattr(mod, attr):
+                    vtpass_bp = getattr(mod, attr)
+                    print(f"✅ Loaded vtpass blueprint from {mod_name}.{attr}")
+                    break
+            if vtpass_bp:
+                break
+        except ImportError:
+            continue
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(payment_bp)
-    app.register_blueprint(vtpass_bp)
+    if vtpass_bp:
+        app.register_blueprint(vtpass_bp)
+    else:
+        print("⚠️  vtpass blueprint not found — vtpass routes will be unavailable")
     app.register_blueprint(referral_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(plans_bp)
@@ -38,6 +52,7 @@ def create_app():
     try:
         from debug_routes import debug_bp
         app.register_blueprint(debug_bp)
+        print("✅ Debug routes loaded")
     except ImportError:
         pass
 
@@ -52,23 +67,7 @@ def create_app():
 
     @app.route('/', methods=['GET'])
     def index():
-        return jsonify({
-            'message': 'Cheap4U API is running',
-            'endpoints': [
-                '/api/auth/register',
-                '/api/auth/login',
-                '/api/auth/verify-otp',
-                '/api/payment/initialize',
-                '/api/plans/data',
-                '/api/plans/cable',
-                '/api/vtpass/airtime',
-                '/api/vtpass/data',
-                '/api/vtpass/electricity',
-                '/api/vtpass/cable-tv',
-                '/api/vtpass/exam-pins',
-                '/health'
-            ]
-        })
+        return jsonify({'message': 'Cheap4U API is running'})
 
     with app.app_context():
         db.create_all()
