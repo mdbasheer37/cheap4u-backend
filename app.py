@@ -23,7 +23,6 @@ def create_app():
     from admin import admin_bp
     from plans import plans_bp
 
-    # Support both vtpass.py and routes.py filenames
     vtpass_bp = None
     for mod_name in ('vtpass', 'routes'):
         try:
@@ -45,7 +44,7 @@ def create_app():
     app.register_blueprint(admin_bp)
     app.register_blueprint(plans_bp)
 
-    # ── TEMPORARY DEBUG ROUTES ────────────────────────────────────────
+    # ── DEBUG ROUTES ──────────────────────────────────────────────────
     def _to_intl(phone):
         phone = str(phone).strip().replace(" ", "").replace("-", "")
         if phone.startswith("0") and len(phone) == 11 and phone.isdigit():
@@ -61,14 +60,23 @@ def create_app():
         return jsonify({
             'TERMII_API_KEY': (api_key[:6] + '...' + api_key[-4:]) if len(api_key) > 10 else ('NOT_SET' if not api_key else 'SET_SHORT'),
             'TERMII_SENDER_ID': app.config.get('TERMII_SENDER_ID', 'NOT SET'),
-            'DB_URL_PREVIEW': db_url[:30] + '...' if db_url else 'NOT SET',
+            'DB_URL_PREVIEW': db_url[:40] + '...' if db_url else 'NOT SET',
             'key_length': len(api_key),
         })
 
+    # GET version so you can test from browser directly
+    @app.route('/api/debug/test-sms', methods=['GET'])
+    def debug_test_sms_get():
+        phone_raw = request.args.get('phone', '09037663816')
+        return _do_test_sms(phone_raw)
+
     @app.route('/api/debug/test-sms', methods=['POST'])
-    def debug_test_sms():
+    def debug_test_sms_post():
         data = request.get_json() or {}
         phone_raw = data.get('phone', '09037663816')
+        return _do_test_sms(phone_raw)
+
+    def _do_test_sms(phone_raw):
         api_key = app.config.get('TERMII_API_KEY', '').strip()
         sender_id = app.config.get('TERMII_SENDER_ID', 'Cheap4uApp').strip()
         if not api_key:
@@ -82,20 +90,21 @@ def create_app():
                 r = http_requests.post(
                     'https://api.ng.termii.com/api/sms/send',
                     json={'api_key': api_key, 'to': phone_intl, 'from': sender,
-                          'sms': 'Cheap4u test: 123456', 'type': 'plain', 'channel': channel},
+                          'sms': 'Cheap4u test OTP: 123456. Ignore.', 'type': 'plain', 'channel': channel},
                     headers={'Content-Type': 'application/json'}, timeout=15)
                 try:
                     body = r.json()
                 except Exception:
                     body = r.text
                 success = r.status_code == 200 and isinstance(body, dict) and body.get('message') == 'Successfully Sent'
-                results.append({'sender': sender, 'channel': channel, 'http_status': r.status_code, 'response': body, 'success': success})
+                results.append({'sender': sender, 'channel': channel,
+                                 'http_status': r.status_code, 'termii_response': body, 'success': success})
                 if success:
-                    return jsonify({'result': 'SMS_SENT', 'via': f'{sender}/{channel}', 'attempts': results})
+                    return jsonify({'result': 'SMS_SENT', 'via': f'{sender}/{channel}', 'all_attempts': results})
             except Exception as e:
                 results.append({'sender': sender, 'channel': channel, 'error': str(e), 'success': False})
-        return jsonify({'result': 'ALL_FAILED', 'attempts': results}), 500
-    # ── END DEBUG ROUTES ─────────────────────────────────────────────
+        return jsonify({'result': 'ALL_FAILED', 'all_attempts': results}), 500
+    # ── END DEBUG ROUTES ──────────────────────────────────────────────
 
     @app.route('/health', methods=['GET'])
     def health_check():
@@ -105,20 +114,18 @@ def create_app():
     def index():
         return jsonify({'message': 'Cheap4U API is running'})
 
-    # FIXED: Use before_request to run db.create_all() lazily on first request
-    # instead of at startup — avoids the DNS/network not ready error on Render
+    # Run db.create_all on first request to avoid startup DNS errors
     @app.before_request
     def create_tables():
-        # Only run once
         if not getattr(app, '_tables_created', False):
             try:
                 db.create_all()
                 from init_plans import init_all
                 init_all()
                 app._tables_created = True
-                print("✅ Database tables created/verified")
+                print("✅ DB ready")
             except Exception as e:
-                print(f"⚠️  DB init error (will retry): {e}")
+                print(f"⚠️  DB init error: {e}")
 
     return app
 
