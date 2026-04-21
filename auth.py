@@ -312,4 +312,4 @@ def login():
             'user': user.to_dict(),
             'session_token': access_token
         }
-    }} 
+    }) 
