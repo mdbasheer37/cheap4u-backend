@@ -1,264 +1,273 @@
-# payment.py
+# payment.py  — Production-ready Paystack integration
 import hmac
 import hashlib
+import requests
+import logging
 from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime
-import requests
-import json
 from models import db, User, Transaction, ReferralTransaction
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
-payment_bp = Blueprint('payment', __name__)
+payment_bp = Blueprint('payment', __name__, url_prefix='/api/payment')
+logger = logging.getLogger(__name__)
 
 
-@payment_bp.route('/api/payment/initialize', methods=['POST'])
-def initialize_payment():
-    """Initialize Paystack payment."""
-    data = request.get_json()
-    email = data.get('email')
-    amount = data.get('amount')
-    service_type = data.get('service_type', 'wallet_funding')
-    service_details = data.get('service_details', {})
-    callback_url = data.get('callback_url', f"{current_app.config['BACKEND_URL']}/api/payment/webhook")
-
-    if not email or not amount:
-        return jsonify({'status': 'error', 'message': 'Email and amount required'}), 400
-
-    paystack_secret = current_app.config['PAYSTACK_SECRET_KEY']
-    headers = {
-        'Authorization': f'Bearer {paystack_secret}',
-        'Content-Type': 'application/json'
-    }
-    payload = {
-        'email': email,
-        'amount': int(amount * 100),  # Convert to kobo
-        'callback_url': callback_url,
-        'metadata': {
-            'service_type': service_type,
-            'service_details': service_details
-        }
-    }
-
+def _paystack(method, path, data=None):
+    """Make a Paystack API call. Returns (ok, response_dict)."""
+    secret = current_app.config.get('PAYSTACK_SECRET_KEY', '')
+    headers = {'Authorization': f'Bearer {secret}', 'Content-Type': 'application/json'}
+    url = f'https://api.paystack.co{path}'
     try:
-        response = requests.post(
-            'https://api.paystack.co/transaction/initialize',
-            json=payload,
-            headers=headers,
-            timeout=30
-        )
-        result = response.json()
-
-        if result.get('status'):
-            reference = result['data']['reference']
-            user = User.query.filter_by(email=email).first()
-            user_id = user.id if user else None
-
-            transaction = Transaction(
-                user_id=user_id,
-                reference=reference,
-                type='wallet_funding',
-                service_type=service_type,
-                amount=amount,
-                status='pending',
-                details=service_details
-            )
-            db.session.add(transaction)
-            db.session.commit()
-
-            return jsonify({
-                'status': 'success',
-                'data': {
-                    'authorization_url': result['data']['authorization_url'],
-                    'reference': reference
-                }
-            })
-        else:
-            return jsonify({'status': 'error', 'message': result.get('message', 'Payment initialization failed')}), 400
-
+        r = requests.get(url, headers=headers, timeout=30) if method == 'GET' else \
+            requests.post(url, json=data, headers=headers, timeout=30)
+        result = r.json()
+        return result.get('status', False), result
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@payment_bp.route('/api/payment/verify/<reference>', methods=['GET'])
-def verify_payment(reference):
-    """Verify Paystack payment."""
-    paystack_secret = current_app.config['PAYSTACK_SECRET_KEY']
-    headers = {
-        'Authorization': f'Bearer {paystack_secret}',
-        'Content-Type': 'application/json'
-    }
-
-    try:
-        response = requests.get(
-            f'https://api.paystack.co/transaction/verify/{reference}',
-            headers=headers,
-            timeout=30
-        )
-        result = response.json()
-
-        if result.get('status'):
-            transaction = Transaction.query.filter_by(reference=reference).first()
-            if not transaction:
-                return jsonify({'status': 'error', 'message': 'Transaction not found'}), 404
-
-            if result['data']['status'] == 'success':
-                transaction.status = 'success'
-                if transaction.type == 'wallet_funding' and transaction.user_id:
-                    user = User.query.get(transaction.user_id)
-                    if user:
-                        user.wallet_balance += transaction.amount
-                db.session.commit()
-
-                return jsonify({
-                    'status': 'success',
-                    'data': {
-                        'status': 'success',
-                        'amount': transaction.amount,
-                        'reference': reference
-                    }
-                })
-            else:
-                transaction.status = 'failed'
-                db.session.commit()
-                return jsonify({
-                    'status': 'success',
-                    'data': {
-                        'status': result['data']['status'],
-                        'message': 'Payment not completed'
-                    }
-                })
-        else:
-            return jsonify({'status': 'error', 'message': result.get('message', 'Verification failed')}), 400
-
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        logger.error(f'Paystack API error {path}: {e}')
+        return False, {'message': str(e)}
 
 
 def create_paystack_customer(email, first_name, last_name, phone):
-    """Create a Paystack customer and return customer_code."""
-    secret_key = current_app.config['PAYSTACK_SECRET_KEY']
-    headers = {
-        "Authorization": f"Bearer {secret_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {"email": email, "first_name": first_name, "last_name": last_name, "phone": phone}
-    response = requests.post("https://api.paystack.co/customer", json=payload, headers=headers, timeout=30)
-    data = response.json()
-    if data.get('status'):
-        return data['data']['customer_code']
-    else:
-        raise Exception(f"Paystack customer creation failed: {data.get('message')}")
+    """Create Paystack customer. Returns customer_code or raises."""
+    ok, result = _paystack('POST', '/customer', {
+        'email': email, 'first_name': first_name,
+        'last_name': last_name, 'phone': phone,
+    })
+    if ok:
+        return result['data']['customer_code']
+    raise Exception(f"Customer creation failed: {result.get('message')}")
 
 
 def create_dedicated_virtual_account(customer_code):
-    """Create a dedicated virtual account for a customer."""
-    secret_key = current_app.config['PAYSTACK_SECRET_KEY']
-    headers = {
-        "Authorization": f"Bearer {secret_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {"customer": customer_code, "preferred_bank": "wema-bank"}
-    response = requests.post("https://api.paystack.co/dedicated_account", json=payload, headers=headers, timeout=30)
-    data = response.json()
-    if data.get('status'):
-        account = data['data']
-        return {
-            'account_number': account['account_number'],
-            'bank_name': account['bank']['name'],
-            'account_name': account['account_name']
-        }
-    else:
-        raise Exception(f"DVA creation failed: {data.get('message')}")
+    """Create DVA. Returns dict with account details or raises."""
+    for bank in ('wema-bank', 'titan-paystack'):
+        ok, result = _paystack('POST', '/dedicated_account', {
+            'customer': customer_code,
+            'preferred_bank': bank,
+        })
+        if ok:
+            acct = result['data']
+            return {
+                'account_number': acct['account_number'],
+                'bank_name': acct['bank']['name'],
+                'account_name': acct['account_name'],
+            }
+        logger.warning(f'DVA failed for {bank}: {result.get("message")}')
+    raise Exception("Could not create virtual account with any bank")
 
 
-@payment_bp.route('/api/payment/account-details', methods=['GET'])
+@payment_bp.route('/initialize', methods=['POST'])
 @jwt_required()
-def get_account_details():
-    """Return the user's virtual account details."""
+def initialize_payment():
+    """Initialize a Paystack card/USSD payment for wallet funding."""
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
 
+    data = request.get_json() or {}
+    amount = data.get('amount')
+    if not amount or float(amount) < 100:
+        return jsonify({'status': 'error', 'message': 'Minimum amount is ₦100'}), 400
+
+    backend_url = current_app.config.get('BACKEND_URL', '')
+    ok, result = _paystack('POST', '/transaction/initialize', {
+        'email': user.email,
+        'amount': int(float(amount) * 100),
+        'callback_url': f'{backend_url}/api/payment/verify',
+        'metadata': {'user_id': user.id, 'service_type': 'wallet_funding'},
+    })
+
+    if not ok:
+        return jsonify({'status': 'error', 'message': result.get('message', 'Failed')}), 400
+
+    ref = result['data']['reference']
+    txn = Transaction(
+        user_id=user.id, reference=ref, type='wallet_funding',
+        service_type='card_payment', amount=float(amount),
+        status='pending', details={'channel': 'card'},
+    )
+    db.session.add(txn)
+    db.session.commit()
+
     return jsonify({
         'status': 'success',
+        'message': 'Payment initialized',
         'data': {
-            'account_number': user.virtual_account_number,
-            'bank_name': user.virtual_bank_name,
-            'account_name': user.virtual_account_name
-        }
+            'authorization_url': result['data']['authorization_url'],
+            'reference': ref,
+            'amount': float(amount),
+        },
     })
 
 
-@payment_bp.route('/api/payment/webhook', methods=['POST'])
+@payment_bp.route('/verify/<reference>', methods=['GET'])
+@jwt_required()
+def verify_payment(reference):
+    """Verify a payment and credit wallet if successful."""
+    ok, result = _paystack('GET', f'/transaction/verify/{reference}')
+    if not ok:
+        return jsonify({'status': 'error', 'message': result.get('message')}), 400
+
+    pay_data = result['data']
+    txn = Transaction.query.filter_by(reference=reference).first()
+    if not txn:
+        return jsonify({'status': 'error', 'message': 'Transaction not found'}), 404
+
+    if txn.status == 'success':
+        return jsonify({'status': 'success', 'message': 'Already credited',
+                        'data': {'amount': txn.amount}})
+
+    if pay_data.get('status') == 'success':
+        amount = pay_data['amount'] / 100
+        _credit_wallet(txn, amount, channel='card')
+        return jsonify({'status': 'success',
+                        'message': f'Wallet credited ₦{amount:,.2f}',
+                        'data': {'amount': amount, 'reference': reference}})
+
+    txn.status = 'failed'
+    db.session.commit()
+    return jsonify({'status': 'error', 'message': 'Payment not successful'}), 400
+
+
+@payment_bp.route('/webhook', methods=['POST'])
 def paystack_webhook():
-    """Handle Paystack webhook events (single consolidated handler)."""
-    secret_key = current_app.config['PAYSTACK_SECRET_KEY']
-    signature = request.headers.get('x-paystack-signature')
-    if not signature:
-        return jsonify({'status': 'error', 'message': 'Missing signature'}), 401
-
+    """
+    Paystack webhook — handles DVA bank transfers + card payments.
+    Set webhook URL in Paystack dashboard to:
+    https://cheap4u-backend.onrender.com/api/payment/webhook
+    """
+    secret = current_app.config.get('PAYSTACK_SECRET_KEY', '')
+    sig = request.headers.get('x-paystack-signature', '')
     body = request.get_data()
-    # Fixed: correct hmac usage - hmac.new(key_bytes, msg_bytes, digestmod)
-    expected_signature = hmac.new(
-        secret_key.encode('utf-8'),
-        body,
-        hashlib.sha512
-    ).hexdigest()
 
-    if not hmac.compare_digest(signature, expected_signature):
+    expected = hmac.new(secret.encode('utf-8'), body, hashlib.sha512).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        logger.warning('Webhook: invalid signature rejected')
         return jsonify({'status': 'error', 'message': 'Invalid signature'}), 401
 
-    data = request.get_json()
-    event = data.get('event')
+    try:
+        event = request.get_json(force=True)
+    except Exception:
+        return jsonify({'status': 'error', 'message': 'Bad JSON'}), 400
 
-    if event == 'charge.success':
-        charge_data = data['data']
-        reference = charge_data['reference']
-        amount = charge_data['amount'] / 100  # kobo → naira
-        customer_code = charge_data['customer']['customer_code']
+    event_type = event.get('event', '')
+    logger.info(f'Paystack webhook: {event_type}')
 
+    if event_type == 'charge.success':
+        _handle_charge_success(event.get('data', {}))
+
+    return jsonify({'status': 'success'}), 200
+
+
+def _handle_charge_success(pay_data):
+    reference = pay_data.get('reference', '')
+    amount = pay_data.get('amount', 0) / 100
+    customer = pay_data.get('customer', {})
+    customer_email = customer.get('email', '').lower()
+    customer_code = customer.get('customer_code', '')
+    channel = pay_data.get('channel', 'unknown')
+
+    # Idempotency check
+    existing = Transaction.query.filter_by(reference=reference).first()
+    if existing and existing.status == 'success':
+        logger.info(f'Webhook: {reference} already processed')
+        return
+
+    # Find user — by customer_code first (DVA), then by email
+    user = None
+    if customer_code:
         user = User.query.filter_by(paystack_customer_code=customer_code).first()
-        if not user:
-            return jsonify({'status': 'error', 'message': 'User not found'}), 404
+    if not user and customer_email:
+        user = User.query.filter_by(email=customer_email).first()
+    if not user:
+        logger.error(f'Webhook: no user found for {customer_email} / {customer_code}')
+        return
 
-        # Idempotency: skip if already processed
-        existing = Transaction.query.filter_by(reference=reference).first()
-        if existing and existing.status == 'success':
-            return jsonify({'status': 'success', 'message': 'Already processed'}), 200
+    txn = existing or Transaction(
+        user_id=user.id, reference=reference, type='wallet_funding',
+        service_type='bank_transfer' if channel == 'dedicated_nuban' else channel,
+        amount=amount, status='pending', details={},
+    )
+    if not existing:
+        db.session.add(txn)
 
-        user.wallet_balance += amount
+    _credit_wallet(txn, amount, channel=channel, user=user)
+    logger.info(f'✅ Credited ₦{amount:,.2f} to {user.email} [{channel}]')
 
-        if existing:
-            existing.status = 'success'
-        else:
-            transaction = Transaction(
-                user_id=user.id,
-                reference=reference,
-                type='wallet_funding',
-                service_type='bank_transfer',
-                amount=amount,
-                status='success',
-                details={'source': 'virtual_account', 'customer_code': customer_code}
-            )
-            db.session.add(transaction)
 
-        # Award signup referral bonus on first-ever funding
-        if not user.referral_bonus_claimed and user.referred_by_user_id:
-            referrer = User.query.get(user.referred_by_user_id)
-            if referrer:
-                bonus_amount = 10.0
-                referrer.referral_earnings += bonus_amount
-                user.referral_bonus_claimed = True
-                ref_tx = ReferralTransaction(
-                    referrer_id=referrer.id,
-                    referred_user_id=user.id,
-                    amount=bonus_amount,
-                    type='signup_bonus'
-                )
-                db.session.add(ref_tx)
+def _credit_wallet(txn, amount, channel='unknown', user=None):
+    if user is None:
+        user = User.query.get(txn.user_id)
+    if not user:
+        return
 
-        db.session.commit()
-        return jsonify({'status': 'success', 'message': 'Wallet credited'}), 200
+    user.wallet_balance = round(user.wallet_balance + amount, 2)
+    txn.status = 'success'
+    txn.amount = amount
+    txn.details = {**(txn.details or {}), 'channel': channel}
 
-    return jsonify({'status': 'success', 'message': 'Event ignored'}), 200
+    # One-time signup referral bonus on first funding
+    if not user.referral_bonus_claimed and user.referred_by_user_id:
+        referrer = User.query.get(user.referred_by_user_id)
+        if referrer:
+            referrer.referral_earnings = round(referrer.referral_earnings + 10.0, 2)
+            user.referral_bonus_claimed = True
+            db.session.add(ReferralTransaction(
+                referrer_id=referrer.id, referred_user_id=user.id,
+                amount=10.0, type='signup_bonus',
+            ))
+
+    db.session.commit()
+
+
+@payment_bp.route('/account-details', methods=['GET'])
+@jwt_required()
+def get_account_details():
+    """Return logged-in user's virtual account + wallet balance."""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+    # Auto-create DVA if missing
+    if not user.virtual_account_number and user.paystack_customer_code:
+        try:
+            dva = create_dedicated_virtual_account(user.paystack_customer_code)
+            user.virtual_account_number = dva['account_number']
+            user.virtual_bank_name = dva['bank_name']
+            user.virtual_account_name = dva['account_name']
+            db.session.commit()
+        except Exception as e:
+            logger.error(f'DVA retry failed user {user.id}: {e}')
+
+    return jsonify({
+        'status': 'success',
+        'data': {
+            'account_number': user.virtual_account_number or 'Not available',
+            'bank_name': user.virtual_bank_name or 'Not available',
+            'account_name': user.virtual_account_name or user.name,
+            'wallet_balance': user.wallet_balance,
+        },
+    })
+
+
+@payment_bp.route('/transactions', methods=['GET'])
+@jwt_required()
+def get_transactions():
+    """Paginated transaction history."""
+    user_id = get_jwt_identity()
+    page = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 100)
+    txns = (Transaction.query.filter_by(user_id=user_id)
+            .order_by(Transaction.created_at.desc())
+            .paginate(page=page, per_page=per_page, error_out=False))
+    return jsonify({
+        'status': 'success',
+        'data': {
+            'transactions': [t.to_dict() for t in txns.items],
+            'total': txns.total,
+            'page': page,
+            'pages': txns.pages,
+        },
+    })
