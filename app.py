@@ -83,13 +83,13 @@ def create_app():
             return jsonify({'error': f'Cannot convert phone {phone_raw}'}), 400
 
         results = []
-        for sender, channel in [(sender_id, "generic"), ("talert", "generic"), ("Termii", "generic")]:
+        for sender, channel in [(None, "number"), ("talert", "generic"), (sender_id, "generic")]:
             try:
                 r = http_requests.post(
                     'https://api.ng.termii.com/api/sms/send',
-                    json={'api_key': api_key, 'to': phone_intl, 'from': sender,
-                          'sms': 'Cheap4u test OTP: 123456. Ignore this message.',
-                          'type': 'plain', 'channel': channel},
+                    json={k: v for k, v in {'api_key': api_key, 'to': phone_intl,
+                          'from': sender, 'sms': 'Cheap4u test OTP: 123456. Ignore.',
+                          'type': 'plain', 'channel': channel}.items() if v is not None},
                     headers={'Content-Type': 'application/json'}, timeout=15)
                 try:
                     body = r.json()
