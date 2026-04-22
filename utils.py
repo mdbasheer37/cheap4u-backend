@@ -1,4 +1,3 @@
-
 # utils.py
 import random
 import string
@@ -44,10 +43,16 @@ def _to_international(phone):
 
 def send_sms(phone, message):
     """
-    Send OTP SMS via Termii.
-    Your account has GENERIC channel only (no DND).
-    We use 'talert' as sender — it is Termii's own built-in sender
-    that works on all accounts without any registration needed.
+    Send OTP SMS via Termii using the 'number' channel.
+
+    The 'number' channel sends from a Termii-owned number (not a Sender ID),
+    so it:
+    - Works 24/7 with NO time restrictions
+    - Does NOT need a registered Sender ID
+    - Works on all networks (MTN, Airtel, Glo, 9mobile)
+    - Works with generic accounts (no DND approval needed)
+
+    Falls back to generic channel with 'talert' if number channel fails.
     """
     api_key = current_app.config.get('TERMII_API_KEY', '').strip()
 
@@ -60,38 +65,97 @@ def send_sms(phone, message):
         logger.error(f"❌ Invalid phone number: {phone}")
         return False
 
-    url = "https://api.ng.termii.com/api/sms/send"
     headers = {"Content-Type": "application/json"}
 
-    # Try senders in order — 'talert' is Termii's default that needs no registration
-    senders = ["talert", "Termii"]
-
-    for sender in senders:
+    # Attempt 1: 'number' channel — uses Termii's own number, no sender ID needed,
+    # works 24/7 without any time restriction
+    try:
         payload = {
             "api_key": api_key,
             "to": phone_intl,
-            "from": sender,
             "sms": message,
             "type": "plain",
-            "channel": "generic",  # Your account only has GENERIC channel
+            "channel": "number",
         }
+        r = requests.post(
+            "https://api.ng.termii.com/api/sms/send",
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
         try:
-            r = requests.post(url, json=payload, headers=headers, timeout=15)
-            try:
-                data = r.json()
-            except Exception:
-                data = {}
+            data = r.json()
+        except Exception:
+            data = {}
+        logger.info(f"Termii [number] → {phone_intl}: {r.status_code} {data}")
 
-            logger.info(f"Termii [{sender}/generic] → {phone_intl}: {r.status_code} {data}")
+        if r.status_code == 200 and data.get("message") == "Successfully Sent":
+            logger.info(f"✅ OTP SMS sent via number channel to {phone_intl}")
+            return True
 
-            if r.status_code == 200 and data.get("message") == "Successfully Sent":
-                logger.info(f"✅ OTP SMS sent to {phone_intl} via {sender}")
-                return True
+        logger.warning(f"number channel failed: {data.get('message')} — trying generic")
+    except Exception as e:
+        logger.error(f"number channel exception: {e}")
 
-            logger.warning(f"⚠️ Sender '{sender}' failed: {data.get('message')}")
+    # Attempt 2: generic channel with 'talert'
+    try:
+        payload = {
+            "api_key": api_key,
+            "to": phone_intl,
+            "from": "talert",
+            "sms": message,
+            "type": "plain",
+            "channel": "generic",
+        }
+        r = requests.post(
+            "https://api.ng.termii.com/api/sms/send",
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
+        try:
+            data = r.json()
+        except Exception:
+            data = {}
+        logger.info(f"Termii [talert/generic] → {phone_intl}: {r.status_code} {data}")
 
-        except Exception as e:
-            logger.error(f"❌ Termii error with sender {sender}: {e}")
+        if r.status_code == 200 and data.get("message") == "Successfully Sent":
+            logger.info(f"✅ OTP SMS sent via talert/generic to {phone_intl}")
+            return True
 
-    logger.error(f"❌ All SMS attempts failed for {phone_intl}")
+        logger.error(f"talert/generic failed: {data.get('message')}")
+    except Exception as e:
+        logger.error(f"talert/generic exception: {e}")
+
+    # Attempt 3: generic channel with custom sender
+    custom_sender = current_app.config.get('TERMII_SENDER_ID', 'Cheap4uApp').strip()
+    try:
+        payload = {
+            "api_key": api_key,
+            "to": phone_intl,
+            "from": custom_sender,
+            "sms": message,
+            "type": "plain",
+            "channel": "generic",
+        }
+        r = requests.post(
+            "https://api.ng.termii.com/api/sms/send",
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
+        try:
+            data = r.json()
+        except Exception:
+            data = {}
+        logger.info(f"Termii [{custom_sender}/generic] → {phone_intl}: {r.status_code} {data}")
+
+        if r.status_code == 200 and data.get("message") == "Successfully Sent":
+            logger.info(f"✅ OTP SMS sent via {custom_sender}/generic to {phone_intl}")
+            return True
+
+        logger.error(f"All 3 SMS attempts failed for {phone_intl}. Last error: {data.get('message')}")
+    except Exception as e:
+        logger.error(f"{custom_sender}/generic exception: {e}")
+
     return False
