@@ -1,22 +1,19 @@
-# auth.py
-from payment import create_paystack_customer, create_dedicated_virtual_account  # noqa
+# auth.py — Registration creates Paystack customer + DVA automatically
+import bcrypt
 from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime, timedelta
 from models import db, User, OTP
 from utils import generate_referral_code, generate_otp, send_sms, validate_email, validate_phone
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
-import bcrypt
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
+_otp_last_sent = {}  # simple in-memory rate limit
+
 
 def invalidate_existing_otps(user_id):
-    """Mark all active OTPs for this user as used."""
     OTP.query.filter_by(user_id=user_id, is_used=False).update({'is_used': True})
     db.session.commit()
-
-
-_otp_last_sent = {}  # user_id -> timestamp (in-memory; use Redis in production)
 
 
 def can_resend_otp(user_id):
@@ -27,250 +24,212 @@ def can_resend_otp(user_id):
     return True
 
 
+def _send_otp(user, purpose='registration'):
+    invalidate_existing_otps(user.id)
+    otp_code   = generate_otp()
+    expires_at = datetime.utcnow() + timedelta(minutes=10)
+    otp = OTP(
+        user_id    = user.id,
+        email      = user.email,
+        phone      = user.phone,
+        code       = otp_code,
+        purpose    = purpose,
+        expires_at = expires_at,
+    )
+    db.session.add(otp)
+    db.session.commit()
+    message  = f"Your Cheap4u verification code is {otp_code}. It expires in 10 minutes. Do not share."
+    sms_sent = send_sms(user.phone, message)
+    return sms_sent, otp_code
+
+
+# ── Set transaction PIN ──────────────────────────────────────
 @auth_bp.route('/set-pin', methods=['POST'])
 @jwt_required()
 def set_transaction_pin():
     user_id = get_jwt_identity()
-    user = User.query.get(user_id)
+    user    = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
 
-    data = request.get_json()
+    data    = request.get_json() or {}
     old_pin = data.get('old_pin')
     new_pin = data.get('new_pin')
 
-    if old_pin:
-        if not user.transaction_pin_hash:
-            return jsonify({'status': 'error', 'message': 'No PIN set yet'}), 400
-        if not bcrypt.checkpw(old_pin.encode('utf-8'), user.transaction_pin_hash.encode('utf-8')):
+    if old_pin and user.transaction_pin_hash:
+        if not bcrypt.checkpw(old_pin.encode(), user.transaction_pin_hash.encode()):
             return jsonify({'status': 'error', 'message': 'Incorrect current PIN'}), 401
 
-    if not new_pin or not new_pin.isdigit() or len(new_pin) < 4 or len(new_pin) > 6:
+    if not new_pin or not new_pin.isdigit() or not (4 <= len(new_pin) <= 6):
         return jsonify({'status': 'error', 'message': 'PIN must be 4-6 digits'}), 400
 
-    pin_hash = bcrypt.hashpw(new_pin.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    user.transaction_pin_hash = pin_hash
+    user.transaction_pin_hash = bcrypt.hashpw(
+        new_pin.encode(), bcrypt.gensalt()
+    ).decode()
     db.session.commit()
     return jsonify({'status': 'success', 'message': 'Transaction PIN set successfully'})
 
 
-@auth_bp.route('/verify-pin', methods=['POST'])
-@jwt_required()
-def verify_transaction_pin():
-    user_id = get_jwt_identity()
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'status': 'error', 'message': 'User not found'}), 404
-
-    data = request.get_json()
-    pin = data.get('pin')
-    if not pin:
-        return jsonify({'status': 'error', 'message': 'PIN required'}), 400
-    if not user.transaction_pin_hash:
-        return jsonify({'status': 'error', 'message': 'No PIN set. Please set a transaction PIN first.'}), 400
-
-    if bcrypt.checkpw(pin.encode('utf-8'), user.transaction_pin_hash.encode('utf-8')):
-        return jsonify({'status': 'success', 'message': 'PIN verified'})
-    else:
-        return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 401
-
-
+# ── Register ─────────────────────────────────────────────────
 @auth_bp.route('/register', methods=['POST'])
 def register():
-    """Register a new user."""
-    data = request.get_json()
-    required = ['name', 'email', 'phone', 'password']
-    if not all(field in data for field in required):
-        return jsonify({'status': 'error', 'message': 'Missing required fields'}), 400
+    data = request.get_json() or {}
 
-    name = data['name']
-    email = data['email'].lower()
-    phone = data['phone']
-    password = data['password']
-    referral_code_input = data.get('referral_code', '').strip()
+    name     = (data.get('name') or '').strip()
+    email    = (data.get('email') or '').strip().lower()
+    phone    = (data.get('phone') or '').strip()
+    password = data.get('password') or ''
+    ref_code = (data.get('referral_code') or '').strip()
 
+    # Validate
+    if not all([name, email, phone, password]):
+        return jsonify({'status': 'error', 'message': 'All fields are required'}), 400
     if not validate_email(email):
         return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
     if not validate_phone(phone):
-        return jsonify({'status': 'error', 'message': 'Phone number must be 11 digits'}), 400
+        return jsonify({'status': 'error', 'message': 'Phone must be 11 digits'}), 400
+    if len(password) < 6:
+        return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'}), 400
     if User.query.filter_by(email=email).first():
         return jsonify({'status': 'error', 'message': 'Email already registered'}), 400
     if User.query.filter_by(phone=phone).first():
         return jsonify({'status': 'error', 'message': 'Phone number already registered'}), 400
 
-    # Validate referral code before creating the user
+    # Validate referral code before creating user
     referrer = None
-    if referral_code_input:
-        referrer = User.query.filter_by(referral_code=referral_code_input).first()
+    if ref_code:
+        referrer = User.query.filter_by(referral_code=ref_code).first()
         if not referrer:
             return jsonify({'status': 'error', 'message': 'Invalid referral code'}), 400
 
+    # Create user
     user = User(
-        name=name,
-        email=email,
-        phone=phone,
-        referral_code=generate_referral_code()
+        name          = name,
+        email         = email,
+        phone         = phone,
+        referral_code = generate_referral_code(),
     )
     user.set_password(password)
     db.session.add(user)
-    db.session.flush()  # Assigns user.id before commit so referrer check works
+    db.session.flush()  # get user.id before commit
 
-    if referrer:
-        # Fixed: user.id is now valid after flush; also prevents self-referral
-        if referrer.id == user.id:
-            return jsonify({'status': 'error', 'message': 'Cannot refer yourself'}), 400
+    # Apply referral (flush gives us user.id so self-referral check works)
+    if referrer and referrer.id != user.id:
+        user.referred_by         = ref_code
         user.referred_by_user_id = referrer.id
         referrer.total_referrals += 1
 
     db.session.commit()
 
-    # Create Paystack customer and virtual account (non-fatal)
+    # Create Paystack customer + DVA (non-fatal — don't block registration)
     try:
-        name_parts = name.split(' ', 1)
+        from payment import create_paystack_customer, create_dedicated_virtual_account
+        name_parts = name.strip().split(' ', 1)
         first_name = name_parts[0]
-        last_name = name_parts[1] if len(name_parts) > 1 else ''
+        last_name  = name_parts[1] if len(name_parts) > 1 else ''
+
         customer_code = create_paystack_customer(email, first_name, last_name, phone)
         user.paystack_customer_code = customer_code
+
         dva = create_dedicated_virtual_account(customer_code)
-        user.virtual_account_number = dva['account_number']
-        user.virtual_bank_name = dva['bank_name']
-        user.virtual_account_name = dva['account_name']
+        if dva:
+            user.virtual_account_number = dva['account_number']
+            user.virtual_bank_name      = dva['bank_name']
+            user.virtual_account_name   = dva['account_name']
+            current_app.logger.info(f'DVA created for user {user.id}: {dva["account_number"]}')
+
         db.session.commit()
+
     except Exception as e:
-        current_app.logger.error(f"DVA creation failed for user {user.id}: {str(e)}")
+        current_app.logger.error(f'Paystack setup failed for user {user.id}: {e}')
+        # Don't fail registration if Paystack fails
 
-    # Generate OTP
-    invalidate_existing_otps(user.id)
-    otp_code = generate_otp()
-    expires_at = datetime.utcnow() + timedelta(minutes=10)
-    otp = OTP(
-        user_id=user.id,
-        email=email,
-        phone=phone,
-        code=otp_code,
-        purpose='registration',
-        expires_at=expires_at
-    )
-    db.session.add(otp)
-    db.session.commit()
-
-    message = f"Your Cheap4u verification code is {otp_code}. It expires in 10 minutes."
-    sms_sent = send_sms(phone, message)
-
+    # Send OTP
+    sms_sent, _ = _send_otp(user, purpose='registration')
     if not sms_sent:
-        current_app.logger.error(f"OTP SMS failed for {phone}.")
+        current_app.logger.error(f'OTP SMS failed for {phone}')
         return jsonify({
-            'status': 'error',
-            'message': (
-                'Account created but we could not send the verification SMS. '
-                'Please try resending the OTP or contact support.'
-            ),
-            'data': {'user_id': user.id, 'phone': phone}
+            'status':  'error',
+            'message': 'Account created but could not send OTP. Please use Resend OTP.',
+            'data':    {'user_id': user.id, 'phone': phone},
         }), 500
 
     return jsonify({
-        'status': 'success',
+        'status':  'success',
         'message': 'Registration successful. OTP sent to your phone.',
-        'data': {
-            'user_id': user.id,
-            'email': email,
-            'phone': phone,
-        }
+        'data':    {'user_id': user.id, 'phone': phone},
     })
 
 
+# ── Verify OTP ───────────────────────────────────────────────
 @auth_bp.route('/verify-otp', methods=['POST'])
 def verify_otp():
-    """Verify OTP code."""
-    data = request.get_json()
-    if not data.get('user_id') or not data.get('otp_code'):
-        return jsonify({'status': 'error', 'message': 'User ID and OTP code required'}), 400
+    data     = request.get_json() or {}
+    user_id  = data.get('user_id')
+    otp_code = data.get('otp_code')
 
-    user_id = data['user_id']
-    otp_code = data['otp_code']
+    if not user_id or not otp_code:
+        return jsonify({'status': 'error', 'message': 'user_id and otp_code required'}), 400
 
     otp = OTP.query.filter_by(
-        user_id=user_id,
-        code=otp_code,
-        is_used=False,
-        purpose='registration'
+        user_id = user_id,
+        code    = otp_code,
+        is_used = False,
+        purpose = 'registration',
     ).first()
 
     if not otp:
         return jsonify({'status': 'error', 'message': 'Invalid OTP code'}), 400
     if datetime.utcnow() > otp.expires_at:
-        return jsonify({'status': 'error', 'message': 'OTP has expired'}), 400
+        return jsonify({'status': 'error', 'message': 'OTP has expired. Please request a new one.'}), 400
 
-    otp.is_used = True
-    user = User.query.get(user_id)
+    otp.is_used   = True
+    user          = User.query.get(user_id)
     user.is_verified = True
     db.session.commit()
 
-    access_token = create_access_token(identity=user.id)
+    token = create_access_token(identity=user.id)
     return jsonify({
-        'status': 'success',
+        'status':  'success',
         'message': 'Account verified successfully',
-        'data': {
-            'user': user.to_dict(),
-            'session_token': access_token
-        }
+        'data':    {'user': user.to_dict(), 'session_token': token},
     })
 
 
+# ── Resend OTP ───────────────────────────────────────────────
 @auth_bp.route('/resend-otp', methods=['POST'])
 def resend_otp():
-    """Resend OTP with rate limiting."""
-    data = request.get_json()
-    if not data.get('user_id'):
-        return jsonify({'status': 'error', 'message': 'User ID required'}), 400
+    data    = request.get_json() or {}
+    user_id = data.get('user_id')
 
-    user_id = data['user_id']
+    if not user_id:
+        return jsonify({'status': 'error', 'message': 'user_id required'}), 400
+
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
 
     if not can_resend_otp(user_id):
-        return jsonify({'status': 'error', 'message': 'Please wait 60 seconds before requesting a new OTP'}), 429
+        return jsonify({'status': 'error',
+                        'message': 'Please wait 60 seconds before requesting a new OTP'}), 429
 
-    invalidate_existing_otps(user_id)
-    otp_code = generate_otp()
-    expires_at = datetime.utcnow() + timedelta(minutes=10)
-    otp = OTP(
-        user_id=user.id,
-        email=user.email,
-        phone=user.phone,
-        code=otp_code,
-        purpose='registration',
-        expires_at=expires_at
-    )
-    db.session.add(otp)
-    db.session.commit()
-
-    message = f"Your Cheap4u verification code is {otp_code}. It expires in 10 minutes."
-    sms_sent = send_sms(user.phone, message)
-
+    sms_sent, _ = _send_otp(user, purpose='registration')
     if not sms_sent:
-        current_app.logger.error(f"OTP resend SMS failed for {user.phone}.")
-        return jsonify({
-            'status': 'error',
-            'message': 'Could not resend OTP. Please check your phone number or contact support.'
-        }), 500
+        return jsonify({'status': 'error',
+                        'message': 'Could not send OTP. Check your phone number.'}), 500
 
-    return jsonify({
-        'status': 'success',
-        'message': 'OTP resent. Please check your phone.',
-    })
+    return jsonify({'status': 'success', 'message': 'OTP resent to your phone.'})
 
 
+# ── Login ────────────────────────────────────────────────────
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    """Login user."""
-    data = request.get_json()
-    if not data.get('email') or not data.get('password'):
-        return jsonify({'status': 'error', 'message': 'Email and password required'}), 400
+    data     = request.get_json() or {}
+    email    = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
 
-    email = data['email'].lower()
-    password = data['password']
+    if not email or not password:
+        return jsonify({'status': 'error', 'message': 'Email and password required'}), 400
 
     user = User.query.filter_by(email=email).first()
     if not user or not user.check_password(password):
@@ -280,36 +239,44 @@ def login():
         return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403
 
     if not user.is_verified:
-        # Auto-resend OTP so unverified user can verify immediately
-        from utils import generate_otp, send_sms
-        from datetime import timedelta
-        invalidate_existing_otps(user.id)
-        otp_code = generate_otp()
-        expires_at = datetime.utcnow() + timedelta(minutes=10)
-        otp = OTP(
-            user_id=user.id, email=user.email, phone=user.phone,
-            code=otp_code, purpose='registration', expires_at=expires_at
-        )
-        db.session.add(otp)
-        db.session.commit()
-        send_sms(user.phone, f"Your Cheap4u verification code is {otp_code}. It expires in 10 minutes.")
+        # Auto-resend OTP for unverified user
+        sms_sent, _ = _send_otp(user, purpose='registration')
         return jsonify({
-            'status': 'error',
+            'status':  'error',
             'message': 'Account not verified. A new OTP has been sent to your phone.',
             'requires_verification': True,
             'user_id': user.id,
-            'phone': user.phone,
+            'phone':   user.phone,
         }), 403
 
     user.last_login = datetime.utcnow()
     db.session.commit()
 
-    access_token = create_access_token(identity=user.id)
+    token = create_access_token(identity=user.id)
     return jsonify({
-        'status': 'success',
+        'status':  'success',
         'message': 'Login successful',
-        'data': {
-            'user': user.to_dict(),
-            'session_token': access_token
-        }
+        'data':    {'user': user.to_dict(), 'session_token': token},
     })
+
+
+# ── Verify PIN ───────────────────────────────────────────────
+@auth_bp.route('/verify-pin', methods=['POST'])
+@jwt_required()
+def verify_pin():
+    user_id = get_jwt_identity()
+    user    = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+    data = request.get_json() or {}
+    pin  = data.get('pin')
+    if not pin:
+        return jsonify({'status': 'error', 'message': 'PIN required'}), 400
+    if not user.transaction_pin_hash:
+        return jsonify({'status': 'error', 'message': 'No PIN set. Please set a PIN first.'}), 400
+
+    if bcrypt.checkpw(pin.encode(), user.transaction_pin_hash.encode()):
+        return jsonify({'status': 'success', 'message': 'PIN verified'})
+    return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 401
+
