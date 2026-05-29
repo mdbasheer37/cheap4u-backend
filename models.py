@@ -159,4 +159,3 @@ class WithdrawalRequest(db.Model):
     processed_at   = db.Column(db.DateTime)
 
     user = db.relationship('User', backref='withdrawals')
-
