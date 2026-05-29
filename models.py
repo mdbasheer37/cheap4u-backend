@@ -159,3 +159,38 @@ class WithdrawalRequest(db.Model):
     processed_at   = db.Column(db.DateTime)
 
     user = db.relationship('User', backref='withdrawals')
+
+
+class DataPlan(db.Model):
+    __tablename__ = 'data_plans'
+
+    id            = db.Column(db.Integer, primary_key=True)
+    plan_id       = db.Column(db.Integer, nullable=False)
+    provider      = db.Column(db.String(50), nullable=False)  # mtn, glo, airtel, 9mobile
+    size          = db.Column(db.String(50))                   # e.g. "1GB"
+    duration      = db.Column(db.String(50))                   # e.g. "30 Days"
+    selling_price = db.Column(db.Float, nullable=False)
+    cost_price    = db.Column(db.Float, nullable=False)
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class CablePlan(db.Model):
+    __tablename__ = 'cable_plans'
+
+    id            = db.Column(db.Integer, primary_key=True)
+    plan_id       = db.Column(db.Integer, nullable=False)
+    provider      = db.Column(db.String(50), nullable=False)   # DSTV, GOTV, STARTIMES
+    plan_name     = db.Column(db.String(100), nullable=False)
+    selling_price = db.Column(db.Float, nullable=False)
+    cost_price    = db.Column(db.Float, nullable=False)
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class ElectricityProvider(db.Model):
+    __tablename__ = 'electricity_providers'
+
+    id               = db.Column(db.Integer, primary_key=True)
+    provider_id      = db.Column(db.Integer, nullable=False)
+    name             = db.Column(db.String(100), nullable=False)
+    discount_percent = db.Column(db.Float, default=0.0)
+    created_at       = db.Column(db.DateTime, default=datetime.utcnow)
