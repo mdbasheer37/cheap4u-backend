@@ -3,7 +3,7 @@ services:
     name: cheap4u-backend
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: bash start.sh
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -11,20 +11,3 @@ services:
         fromDatabase:
           name: cheap4u-db
           property: connectionString
-      - key: SECRET_KEY
-        generateValue: true
-      - key: JWT_SECRET_KEY
-        generateValue: true
-      - key: PAYSTACK_SECRET_KEY
-        sync: false
-      - key: VTPASS_API_KEY
-        sync: false
-      - key: TERMII_API_KEY
-        sync: false
-      - key: BACKEND_URL
-        value: https://cheap4u-backend.onrender.com
-
-databases:
-  - name: cheap4u-db
-    plan: free
-    
