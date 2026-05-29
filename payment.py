@@ -453,16 +453,18 @@ def get_transactions():
         Transaction.query
         .filter_by(user_id=user_id)
         .order_by(Transaction.created_at.desc())
-        .paginate(page=page, per_page=per_page, error_out=False)
+        .limit(per_page).offset((page - 1) * per_page)
+        .all()
     )
+    total = Transaction.query.filter_by(user_id=user_id).count()
 
     return jsonify({
         'status': 'success',
         'data': {
-            'transactions': [t.to_dict() for t in txns.items],
-            'total':        txns.total,
+            'transactions': [t.to_dict() for t in txns],
+            'total':        total,
             'page':         page,
-            'pages':        txns.pages,
-            'has_next':     txns.has_next,
+            'pages':        (total + per_page - 1) // per_page,
+            'has_next':     (page * per_page) < total,
         },
     })
