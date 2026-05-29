@@ -279,4 +279,3 @@ def verify_pin():
     if bcrypt.checkpw(pin.encode(), user.transaction_pin_hash.encode()):
         return jsonify({'status': 'success', 'message': 'PIN verified'})
     return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 401
-
