@@ -44,7 +44,5 @@ class Config:
     PROFIT_MARGIN_AIRTIME       = float(os.getenv('PROFIT_MARGIN_AIRTIME', '5'))
     PROFIT_MARGIN_ELECTRICITY   = float(os.getenv('PROFIT_MARGIN_ELECTRICITY', '5'))
     PROFIT_MARGIN_EXAM_PIN      = float(os.getenv('PROFIT_MARGIN_EXAM_PIN', '10'))
- 
 
     ADMIN_EMAILS = ['admin@cheap4u.com', 'muhammadibrahim3766@gmail.com']
-
