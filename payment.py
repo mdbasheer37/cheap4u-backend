@@ -124,7 +124,7 @@ def get_account_details():
     Returns the user's virtual account details + wallet balance.
     If DVA doesn't exist yet, tries to create it automatically.
     """
-    user_id = get_jwt_identity()
+    user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
@@ -169,7 +169,7 @@ def get_account_details():
 @jwt_required()
 def initialize_payment():
     """Initialize card/USSD wallet funding via Paystack."""
-    user_id = get_jwt_identity()
+    user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
