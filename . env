@@ -1,8 +1,8 @@
 # Development only - DO NOT use in production
-SECRET_KEY=d059163a83113cb6e074ce4190c9aa199576c9c694d130172f15f49abe2d86b0 
-JWT_SECRET_KEY=95f4eab367d48edaee2c937f37d9445af1a2f25f27133090923e8d85635ccba6
+#SECRET_KEY=d059163a83113cb6e074ce4190c9aa199576c9c694d130172f15f49abe2d86b0 
+#JWT_SECRET_KEY=95f4eab367d48edaee2c937f37d9445af1a2f25f27133090923e8d85635ccba6
  
-DEBUG=True
+#DEBUG=True
 
 # PostgreSQL Database (Production)
 # DATABASE_URL=postgresql://cheap4u_user:J66V0KlaIjAAeuSQnSNwfOgFjegZYFP6@dpg-d8fl2pf40ujc73b5lvc0-a/cheap4u_db_umci
@@ -14,34 +14,34 @@ DEBUG=True
 # DATABASE_URL=sqlite:///database.db
 
 # Paystack - Get these from paystack.com (free)
-PAYSTACK_SECRET_KEY=sk_test_5c57ca8a019c0cf50ef3312228587057d30e8a66 
-PAYSTACK_PUBLIC_KEY=pk_test_b8f7988d75720f9bd4a44698420689bd56b9ccb4 
+#PAYSTACK_SECRET_KEY=sk_test_5c57ca8a019c0cf50ef3312228587057d30e8a66 
+#PAYSTACK_PUBLIC_KEY=pk_test_b8f7988d75720f9bd4a44698420689bd56b9ccb4 
 
 # VTPass - Get from vtpass.com
 #VTPASS_API_KEY=your-vtpass-api-key-here
 #VTPASS_BASE_URL=https://vtpass.com/api
 
 # CheapDataHub API credentials (get these from CheapDataHub)
-CHEAPDATAHUB_API_KEY=de13aa185599dd8977a980ac3194ca5221b882fd 
-CHEAPDATAHUB_BASE_URL=https://api.cheapdatahub.com/v1   # update with real URL
+#CHEAPDATAHUB_API_KEY=de13aa185599dd8977a980ac3194ca5221b882fd 
+#CHEAPDATAHUB_BASE_URL=https://api.cheapdatahub.com/v1   # update with real URL
 
 # VtuNaija API for Exam Pins
-VTUNAIJA_API_KEY=Ibrahim5804d35f7f1be7284bf4e972cf41b7
-VTUNAIJA_BASE_URL=https://vtunaija.com.ng/api
+#VTUNAIJA_API_KEY=Ibrahim5804d35f7f1be7284bf4e972cf41b7
+#VTUNAIJA_BASE_URL=https://vtunaija.com.ng/api
 
 # Profit margin for exam pins (percentage)
-PROFIT_MARGIN_EXAM_PIN=10 
+#PROFIT_MARGIN_EXAM_PIN=10 
 
 # Your profit margins (percentage)
-PROFIT_MARGIN_AIRTIME=5
-PROFIT_MARGIN_DATA=10
-PROFIT_MARGIN_ELECTRICITY=5
-PROFIT_MARGIN_CABLE_TV=5
-PROFIT_MARGIN_EXAM_PIN=10 
+#PROFIT_MARGIN_AIRTIME=5
+#PROFIT_MARGIN_DATA=10
+#PROFIT_MARGIN_ELECTRICITY=5
+#PROFIT_MARGIN_CABLE_TV=5
+#PROFIT_MARGIN_EXAM_PIN=10 
 
 # Termii - Optional for testing (leave blank to skip SMS)
-TERMII_API_KEY=TLmOQIYHvwkjuJBhrEShfyjuyQzurtvWXwXeSoeUseuiWRLwHHpqjWnfHpZUWn 
-TERMII_SENDER_ID=Cheap4uApp
+#TERMII_API_KEY=TLmOQIYHvwkjuJBhrEShfyjuyQzurtvWXwXeSoeUseuiWRLwHHpqjWnfHpZUWn 
+#TERMII_SENDER_ID=Cheap4uApp
 
 # App URL
-BACKEND_URL=http://localhost:10000
+#BACKEND_URL=http://localhost:10000
