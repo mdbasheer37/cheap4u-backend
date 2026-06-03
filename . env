@@ -5,7 +5,7 @@ JWT_SECRET_KEY=95f4eab367d48edaee2c937f37d9445af1a2f25f27133090923e8d85635ccba6
 DEBUG=True
 
 # PostgreSQL Database (Production)
-DATABASE_URL=postgresql://cheap4u_user:J66V0KlaIjAAeuSQnSNwfOgFjegZYFP6@dpg-d8fl2pf40ujc73b5lvc0-a/cheap4u_db_umci
+# DATABASE_URL=postgresql://cheap4u_user:J66V0KlaIjAAeuSQnSNwfOgFjegZYFP6@dpg-d8fl2pf40ujc73b5lvc0-a/cheap4u_db_umci
 
 # For local development, you can still use SQLite
 # DATABASE_URL=sqlite:///database.db
