@@ -149,10 +149,10 @@ def register():
     if not sms_sent:
         current_app.logger.error(f'OTP SMS failed for {phone}')
         return jsonify({
-            'status':  'error',
-            'message': 'Account created but could not send OTP. Please use Resend OTP.',
+            'status':  'success',
+            'message': 'Account created. Tap Resend OTP to get your code.',
             'data':    {'user_id': user.id, 'phone': phone},
-        }), 500
+        })
 
     return jsonify({
         'status':  'success',
