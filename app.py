@@ -17,11 +17,15 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
+    # Log which database we are connecting to (masked)
+    db_url = app.config.get('SQLALCHEMY_DATABASE_URI', '')
+    logger.info(f"DB: {db_url[:40]}..." if len(db_url) > 40 else f"DB: {db_url}")
+
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     db.init_app(app)
     JWTManager(app)
 
-    # ── Register blueprints ──────────────────────────────────
+    # ── Register blueprints ──────────────────────────────────────────
     from auth import auth_bp
     from payment import payment_bp
     from admin import admin_bp
@@ -32,23 +36,21 @@ def create_app():
     app.register_blueprint(admin_bp)
     app.register_blueprint(plans_bp)
 
-    # referral blueprint (optional — skip if file missing)
     try:
         from referral import referral_bp
         app.register_blueprint(referral_bp)
     except ImportError:
         logger.warning('referral.py not found — skipping')
 
-    # vtpass/routes blueprint — try both filenames
+    # vtpass / routes blueprint
     vtpass_bp = None
     for mod_name in ('vtpass', 'routes'):
         try:
             mod = importlib.import_module(mod_name)
             for attr in ('vtpass_bp', 'bp', 'main'):
                 if hasattr(mod, attr):
-                    candidate = getattr(mod, attr)
-                    # Make sure it's actually a Blueprint
                     from flask import Blueprint
+                    candidate = getattr(mod, attr)
                     if isinstance(candidate, Blueprint):
                         vtpass_bp = candidate
                         break
@@ -58,15 +60,14 @@ def create_app():
             continue
         except Exception as e:
             logger.warning(f'Could not load {mod_name}: {e}')
-            continue
 
     if vtpass_bp:
         app.register_blueprint(vtpass_bp)
-        logger.info(f'vtpass blueprint loaded')
+        logger.info('vtpass blueprint loaded')
     else:
         logger.warning('vtpass blueprint not found — VTU routes unavailable')
 
-    # ── Debug routes (remove after confirming everything works) ─
+    # ── Debug routes ────────────────────────────────────────────────
     def _to_intl(phone):
         phone = str(phone).strip().replace(' ', '').replace('-', '')
         if phone.startswith('0') and len(phone) == 11 and phone.isdigit():
@@ -81,12 +82,11 @@ def create_app():
         db_url  = app.config.get('SQLALCHEMY_DATABASE_URI', '')
         ps_key  = app.config.get('PAYSTACK_SECRET_KEY', '').strip()
         return jsonify({
-            'TERMII_API_KEY':      (api_key[:6] + '...' + api_key[-4:]) if len(api_key) > 10 else 'NOT_SET',
+            'TERMII_API_KEY':      (api_key[:6]+'...'+api_key[-4:]) if len(api_key)>10 else 'NOT_SET',
             'TERMII_SENDER_ID':    app.config.get('TERMII_SENDER_ID'),
-            'PAYSTACK_SECRET_KEY': (ps_key[:8] + '...') if ps_key else 'NOT_SET',
-            'DB_URL_PREVIEW':      db_url[:40] + '...' if db_url else 'NOT_SET',
-            'termii_key_length':   len(api_key),
-            'paystack_key_length': len(ps_key),
+            'PAYSTACK_SECRET_KEY': (ps_key[:8]+'...') if ps_key else 'NOT_SET',
+            'DB_URL_PREVIEW':      db_url[:50]+'...' if len(db_url)>50 else db_url,
+            'DB_TYPE':             'postgresql' if 'postgresql' in db_url else 'sqlite',
         })
 
     @app.route('/api/debug/test-sms', methods=['GET', 'POST'])
@@ -95,17 +95,15 @@ def create_app():
             phone_raw = (request.get_json() or {}).get('phone', '09037663816')
         else:
             phone_raw = request.args.get('phone', '09037663816')
-
         api_key  = app.config.get('TERMII_API_KEY', '').strip()
+        sender_id = app.config.get('TERMII_SENDER_ID', 'Cheap4uApp').strip()
         if not api_key:
             return jsonify({'error': 'TERMII_API_KEY not set'}), 500
-
         phone_intl = _to_intl(phone_raw)
         if not phone_intl:
             return jsonify({'error': f'Bad phone: {phone_raw}'}), 400
-
         results = []
-        for sender, channel in [(None, 'number'), ('talert', 'generic')]:
+        for sender, channel in [(None, 'number'), ('talert', 'generic'), (sender_id, 'generic')]:
             payload = {k: v for k, v in {
                 'api_key': api_key, 'to': phone_intl, 'from': sender,
                 'sms': 'Cheap4u test OTP: 123456. Ignore.',
@@ -114,9 +112,7 @@ def create_app():
             try:
                 r = http_requests.post(
                     'https://api.ng.termii.com/api/sms/send',
-                    json=payload,
-                    headers={'Content-Type': 'application/json'},
-                    timeout=15)
+                    json=payload, headers={'Content-Type': 'application/json'}, timeout=15)
                 try:
                     body = r.json()
                 except Exception:
@@ -130,16 +126,28 @@ def create_app():
                 results.append({'sender': sender, 'channel': channel, 'error': str(e), 'success': False})
         return jsonify({'result': 'ALL_FAILED', 'attempts': results}), 500
 
-    # ── Core routes ──────────────────────────────────────────
+    # ── Core routes ──────────────────────────────────────────────────
     @app.route('/health', methods=['GET'])
     def health_check():
-        return jsonify({'status': 'healthy', 'message': 'Cheap4U backend running', 'version': '1.0.0'})
+        db_ok = False
+        try:
+            db.session.execute(db.text('SELECT 1'))
+            db_ok = True
+        except Exception:
+            pass
+        return jsonify({
+            'status':   'healthy',
+            'message':  'Cheap4U backend running',
+            'database': 'connected' if db_ok else 'disconnected',
+            'version':  '1.0.0',
+        })
 
     @app.route('/', methods=['GET'])
     def index():
         return jsonify({'message': 'Cheap4U API is running'})
 
-    # ── Create DB tables on first request ───────────────────
+    # ── Create DB tables on first request ────────────────────────────
+    # Using before_request avoids DNS-not-ready errors at startup
     @app.before_request
     def create_tables():
         if not getattr(app, '_tables_created', False):
