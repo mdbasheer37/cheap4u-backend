@@ -1,48 +1,54 @@
-# conpig.py  (keep this exact filename — your Render server uses conpig not config)
+# conpig.py
 import os
 from datetime import timedelta
 from dotenv import load_dotenv
 
-# override=False means Render dashboard env vars always win over .env file
+# override=False: Render dashboard env vars always win over .env file
 load_dotenv(override=False)
 
 
+def _fix_db_url(url):
+    """Fix postgres:// → postgresql:// for SQLAlchemy."""
+    if url and url.startswith('postgres://'):
+        return url.replace('postgres://', 'postgresql://', 1)
+    return url
+
+
 class Config:
-    SECRET_KEY                  = os.getenv('SECRET_KEY', 'cheap4u-secret-key-change-me')
-    JWT_SECRET_KEY              = os.getenv('JWT_SECRET_KEY', 'cheap4u-jwt-key-change-me')
-    JWT_ACCESS_TOKEN_EXPIRES    = timedelta(days=7)
+    SECRET_KEY               = os.getenv('SECRET_KEY', 'cheap4u-secret-key')
+    JWT_SECRET_KEY           = os.getenv('JWT_SECRET_KEY', 'cheap4u-jwt-key')
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(days=7)
 
-    # Database — Render injects DATABASE_URL automatically
-    _db_url = os.getenv('DATABASE_URL', '')
-    if _db_url.startswith('postgres://'):
-        _db_url = _db_url.replace('postgres://', 'postgresql://', 1)
-    SQLALCHEMY_DATABASE_URI     = _db_url if _db_url else 'sqlite:///database.db'
+    # Database — use os.environ directly (bypasses dotenv caching)
+    # Tries DATABASE_URL first, then falls back to SQLite
+    _raw_url = os.environ.get('DATABASE_URL') or os.getenv('DATABASE_URL', '')
+    SQLALCHEMY_DATABASE_URI = _fix_db_url(_raw_url) or 'sqlite:///database.db'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # Connection pool settings to handle Render's cold starts
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'pool_pre_ping': True,
+        'pool_recycle':  300,
+        'connect_args':  {'connect_timeout': 10},
+    }
 
-    # Paystack
-    PAYSTACK_SECRET_KEY         = os.getenv('PAYSTACK_SECRET_KEY', '')
-    PAYSTACK_PUBLIC_KEY         = os.getenv('PAYSTACK_PUBLIC_KEY', '')
+    PAYSTACK_SECRET_KEY  = os.getenv('PAYSTACK_SECRET_KEY', '')
+    PAYSTACK_PUBLIC_KEY  = os.getenv('PAYSTACK_PUBLIC_KEY', '')
 
-    # CheapDataHub
-    CHEAPDATAHUB_API_KEY        = os.getenv('CHEAPDATAHUB_API_KEY', '')
-    CHEAPDATAHUB_BASE_URL       = os.getenv('CHEAPDATAHUB_BASE_URL', 'https://www.cheapdatahub.ng/api/v1/resellers/')
+    CHEAPDATAHUB_API_KEY  = os.getenv('CHEAPDATAHUB_API_KEY', '')
+    CHEAPDATAHUB_BASE_URL = os.getenv('CHEAPDATAHUB_BASE_URL',
+                            'https://www.cheapdatahub.ng/api/v1/resellers/')
 
-    # VtuNaija
-    VTUNAIJA_API_KEY            = os.getenv('VTUNAIJA_API_KEY', '')
-    VTUNAIJA_BASE_URL           = os.getenv('VTUNAIJA_BASE_URL', 'https://vtunaija.com.ng/api')
+    VTUNAIJA_API_KEY  = os.getenv('VTUNAIJA_API_KEY', '')
+    VTUNAIJA_BASE_URL = os.getenv('VTUNAIJA_BASE_URL',
+                        'https://vtunaija.com.ng/api')
 
-    # Termii
-    TERMII_API_KEY              = os.getenv('TERMII_API_KEY', '')
-    TERMII_SENDER_ID            = os.getenv('TERMII_SENDER_ID', 'Cheap4uApp')
+    TERMII_API_KEY   = os.getenv('TERMII_API_KEY', '')
+    TERMII_SENDER_ID = os.getenv('TERMII_SENDER_ID', 'Cheap4uApp')
 
-    # App
-    DEBUG                       = os.getenv('DEBUG', 'False').lower() == 'true'
-    BACKEND_URL                 = os.getenv('BACKEND_URL', 'https://cheap4u-backend.onrender.com')
-    ALLOWED_ORIGINS             = os.getenv('ALLOWED_ORIGINS', '*')
+    DEBUG       = os.getenv('DEBUG', 'False').lower() == 'true'
+    BACKEND_URL = os.getenv('BACKEND_URL',
+                  'https://cheap4u-backend.onrender.com')
 
-    # Profit margins
-    PROFIT_MARGIN_AIRTIME       = float(os.getenv('PROFIT_MARGIN_AIRTIME', '5'))
-    PROFIT_MARGIN_ELECTRICITY   = float(os.getenv('PROFIT_MARGIN_ELECTRICITY', '5'))
-    PROFIT_MARGIN_EXAM_PIN      = float(os.getenv('PROFIT_MARGIN_EXAM_PIN', '10'))
-
-    ADMIN_EMAILS = ['admin@cheap4u.com', 'muhammadibrahim3766@gmail.com']
+    PROFIT_MARGIN_AIRTIME     = float(os.getenv('PROFIT_MARGIN_AIRTIME', '5'))
+    PROFIT_MARGIN_ELECTRICITY = float(os.getenv('PROFIT_MARGIN_ELECTRICITY', '5'))
+    PROFIT_MARGIN_EXAM_PIN    = float(os.getenv('PROFIT_MARGIN_EXAM_PIN', '10'))
