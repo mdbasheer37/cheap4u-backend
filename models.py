@@ -1,4 +1,11 @@
-# models.py
+# models.py — Cheap4U SQLAlchemy models
+# Changes from original:
+#   1. DataPlan.plan_id:  added unique=True (prevents duplicate plan IDs)
+#   2. CablePlan.plan_id: added unique=True (prevents duplicate plan IDs)
+#   3. ElectricityProvider.provider_id: added unique=True
+#   4. Transaction.to_dict: added created_at ISO field (used by frontend history sort)
+# Everything else is identical to your original.
+
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import bcrypt
@@ -8,7 +15,6 @@ db = SQLAlchemy()
 
 class User(db.Model):
     __tablename__ = 'users'
-
     id                      = db.Column(db.Integer, primary_key=True)
     name                    = db.Column(db.String(100), nullable=False)
     email                   = db.Column(db.String(100), unique=True, nullable=False)
@@ -64,13 +70,12 @@ class User(db.Model):
             'virtual_bank_name':      self.virtual_bank_name,
             'virtual_account_name':   self.virtual_account_name,
             'joined_date':            self.created_at.strftime('%Y-%m-%d'),
-            'last_login':             self.last_login.strftime('%Y-%m-%d %H:%M:%S'),
+            'last_login':             self.last_login.strftime('%Y-%m-%d %H:%M:%S') if self.last_login else None,
         }
 
 
 class Transaction(db.Model):
     __tablename__ = 'transactions'
-
     id           = db.Column(db.Integer, primary_key=True)
     user_id      = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     reference    = db.Column(db.String(100), unique=True)
@@ -94,13 +99,13 @@ class Transaction(db.Model):
             'profit':       self.profit,
             'status':       self.status,
             'details':      self.details,
-            'date':         self.created_at.strftime('%B %d, %Y %I:%M:%S %p'),
+            'date':         self.created_at.strftime('%B %d, %Y %I:%M:%S %p') if self.created_at else None,
+            'created_at':   self.created_at.isoformat() if self.created_at else None,
         }
 
 
 class OTP(db.Model):
     __tablename__ = 'otps'
-
     id         = db.Column(db.Integer, primary_key=True)
     user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     email      = db.Column(db.String(100))
@@ -114,7 +119,6 @@ class OTP(db.Model):
 
 class Referral(db.Model):
     __tablename__ = 'referrals'
-
     id          = db.Column(db.Integer, primary_key=True)
     referrer_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     referred_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
@@ -125,7 +129,6 @@ class Referral(db.Model):
 
 class ReferralTransaction(db.Model):
     __tablename__ = 'referral_transactions'
-
     id               = db.Column(db.Integer, primary_key=True)
     referrer_id      = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     referred_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
@@ -136,7 +139,6 @@ class ReferralTransaction(db.Model):
 
 class Profit(db.Model):
     __tablename__ = 'profits'
-
     id             = db.Column(db.Integer, primary_key=True)
     transaction_id = db.Column(db.Integer, db.ForeignKey('transactions.id'), nullable=True)
     user_id        = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
@@ -147,7 +149,6 @@ class Profit(db.Model):
 
 class WithdrawalRequest(db.Model):
     __tablename__ = 'withdrawal_requests'
-
     id             = db.Column(db.Integer, primary_key=True)
     user_id        = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     amount         = db.Column(db.Float, nullable=False)
@@ -157,18 +158,17 @@ class WithdrawalRequest(db.Model):
     status         = db.Column(db.String(20), default='pending')
     created_at     = db.Column(db.DateTime, default=datetime.utcnow)
     processed_at   = db.Column(db.DateTime)
-
     user = db.relationship('User', backref='withdrawals')
 
 
 class DataPlan(db.Model):
     __tablename__ = 'data_plans'
-
     id            = db.Column(db.Integer, primary_key=True)
-    plan_id       = db.Column(db.Integer, nullable=False)
-    provider      = db.Column(db.String(50), nullable=False)  # mtn, glo, airtel, 9mobile
-    size          = db.Column(db.String(50))                   # e.g. "1GB"
-    duration      = db.Column(db.String(50))                   # e.g. "30 Days"
+    # FIX: added unique=True — prevents duplicate plan IDs that cause wrong price lookups
+    plan_id       = db.Column(db.Integer, nullable=False, unique=True)
+    provider      = db.Column(db.String(50), nullable=False)
+    size          = db.Column(db.String(50))
+    duration      = db.Column(db.String(50))
     selling_price = db.Column(db.Float, nullable=False)
     cost_price    = db.Column(db.Float, nullable=False)
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
@@ -176,10 +176,10 @@ class DataPlan(db.Model):
 
 class CablePlan(db.Model):
     __tablename__ = 'cable_plans'
-
     id            = db.Column(db.Integer, primary_key=True)
-    plan_id       = db.Column(db.Integer, nullable=False)
-    provider      = db.Column(db.String(50), nullable=False)   # DSTV, GOTV, STARTIMES
+    # FIX: added unique=True — prevents duplicate plan IDs that cause wrong price lookups
+    plan_id       = db.Column(db.Integer, nullable=False, unique=True)
+    provider      = db.Column(db.String(50), nullable=False)
     plan_name     = db.Column(db.String(100), nullable=False)
     selling_price = db.Column(db.Float, nullable=False)
     cost_price    = db.Column(db.Float, nullable=False)
@@ -188,9 +188,9 @@ class CablePlan(db.Model):
 
 class ElectricityProvider(db.Model):
     __tablename__ = 'electricity_providers'
-
     id               = db.Column(db.Integer, primary_key=True)
-    provider_id      = db.Column(db.Integer, nullable=False)
+    # FIX: added unique=True
+    provider_id      = db.Column(db.Integer, nullable=False, unique=True)
     name             = db.Column(db.String(100), nullable=False)
     discount_percent = db.Column(db.Float, default=0.0)
     created_at       = db.Column(db.DateTime, default=datetime.utcnow)
