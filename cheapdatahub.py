@@ -158,13 +158,15 @@ def buy_airtime(network, phone, amount, user_email):
         }
     else:
         error_msg = api_result.get("message", "Airtime purchase failed")
+        # Translate CheapDataHub internal errors to user-friendly messages
+        if "wallet balance" in error_msg.lower() or "balance too low" in error_msg.lower():
+            error_msg = "Service temporarily unavailable. Please try again later."
+        if "less than" in error_msg.lower() or "minimum" in error_msg.lower():
+            error_msg = "Minimum airtime amount is ₦100."
         transaction.status = "failed"
         transaction.details["error"] = error_msg
         db.session.commit()
-        logger.error(f"[Airtime] FAILED {reference} | {error_msg}")
         return {"status": "error", "message": error_msg}
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA
 # ─────────────────────────────────────────────────────────────────────────────
