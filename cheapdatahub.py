@@ -149,11 +149,11 @@ def buy_airtime(network, phone, amount, user_email):
             "status": "success",
             "message": "Airtime purchase successful",
             "data": {
-                "reference":      reference,
                 "transaction_id": api_result.get("transaction_id"),
-                "profit_amount":  profit_amount,
+                "profit_amount":  round(profit_amount, 2),
                 "selling_price":  selling_price,
                 "new_balance":    round(user.wallet_balance, 2),
+                "reference":      reference
             },
         }
     else:
