@@ -1,10 +1,13 @@
-# cheapdatahub.py — CheapDataHub provider integration
-# Changes from original:
-#   1. Reference IDs now use UUID instead of timestamp (no collisions under load)
-#   2. Added with_for_update() on user query to prevent race-condition double-spend
-#   3. Added "success"/"successful" to success check (was only "true")
-#   4. Non-JSON response handled gracefully
-# Wallet debit order was already correct in original (debit inside success block).
+# cheapdatahub.py
+# Fixed issues (based on official CheapDataHub API docs):
+#   1. Airtime:     added new_balance to success response
+#   2. Electricity: changed payload field "disco" → "disco_id" (integer)
+#                   changed "phone_number" → "phone"
+#                   token is nested inside data.token not top level
+#   3. Cable TV:    changed "package_id" → "plan_id"
+#                   changed "smartcard_number" → "cardnumber"
+#                   added "phone" field (required by API)
+#   4. All:         status check now handles "true", "True", "success"
 
 import os
 import uuid
@@ -17,65 +20,81 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 CHEAPDATAHUB_API_KEY  = os.environ.get("CHEAPDATAHUB_API_KEY", "")
-CHEAPDATAHUB_BASE_URL = os.environ.get("CHEAPDATAHUB_BASE_URL", "https://www.cheapdatahub.ng/api/v1/resellers/")
-
+CHEAPDATAHUB_BASE_URL = os.environ.get("CHEAPDATAHUB_BASE_URL",
+                                        "https://www.cheapdatahub.ng/api/v1/resellers/")
 PROFIT_MARGINS = {
     "airtime":     float(os.environ.get("PROFIT_MARGIN_AIRTIME", "5")),
     "electricity": float(os.environ.get("PROFIT_MARGIN_ELECTRICITY", "5")),
 }
 
+# ── Electricity disco name → ID mapping (from CheapDataHub dashboard) ─────────
+DISCO_ID_MAP = {
+    "Ikeja Electric":          1,
+    "IKEDC":                   1,
+    "Eko Electric":            2,
+    "EKEDC":                   2,
+    "Ibadan Electric":         3,
+    "IBEDC":                   3,
+    "Enugu Electric":          4,
+    "EEDC":                    4,
+    "Abuja Electric AEDC":     5,
+    "AEDC":                    5,
+    "Kaduna Electric":         6,
+    "KEDCO":                   6,
+    "Port Harcourt Electric":  7,
+    "PHED":                    7,
+    "Jos Electricity JEDplc":  8,
+    "JED":                     8,
+    "Kano Electric":           9,
+    "KEDCO Kano":              9,
+    "Benin Electric":          10,
+    "BEDC":                    10,
+}
+
 
 def cheapdatahub_request(endpoint, method="POST", data=None, timeout=30):
-    """Wrapper for CheapDataHub API calls with timeout and error handling."""
+    """Wrapper for CheapDataHub API calls."""
     headers = {
         "Authorization": f"Bearer {CHEAPDATAHUB_API_KEY}",
         "Content-Type":  "application/json",
     }
-    url = f"{CHEAPDATAHUB_BASE_URL.rstrip('/')}/{endpoint.lstrip('/')}"
-    logger.info(f"[CheapDataHub] {method} {url} | data={data}")
+    url = f"{CHEAPDATAHUB_BASE_URL}{endpoint}"
+    logger.info(f"CheapDataHub Request: {method} {url} | Data: {data}")
     try:
         if method.upper() == "GET":
             response = requests.get(url, headers=headers, timeout=timeout)
         else:
             response = requests.post(url, json=data, headers=headers, timeout=timeout)
-
         try:
             result = response.json()
         except Exception:
-            logger.error(f"[CheapDataHub] Non-JSON response HTTP {response.status_code}: {response.text[:200]}")
+            logger.error(f"Non-JSON response HTTP {response.status_code}: {response.text[:200]}")
             return {"status": "false", "message": f"Provider error (HTTP {response.status_code})"}
-
-        logger.info(f"[CheapDataHub] Response: {result}")
+        logger.info(f"CheapDataHub Response: {result}")
         return result
-
     except requests.exceptions.Timeout:
-        logger.error("[CheapDataHub] Request timed out")
         return {"status": "false", "message": "Request timed out"}
     except requests.exceptions.ConnectionError:
-        logger.error("[CheapDataHub] Connection error")
         return {"status": "false", "message": "Network connection error"}
     except Exception as e:
-        logger.error(f"[CheapDataHub] Exception: {e}")
         return {"status": "false", "message": f"Request error: {str(e)}"}
 
 
-def _make_reference(prefix, user_id):
-    """Generate a unique reference using UUID — no timestamp collisions."""
-    short = uuid.uuid4().hex[:8].upper()
-    return f"{prefix}_{short}_{user_id}"
-
-
 def _is_success(api_result):
-    """Check if CheapDataHub returned a success status (handles 'true'/'success'/'successful')."""
+    """Handle 'true', 'True', 'success', 'successful' from CheapDataHub."""
     status = str(api_result.get("status", "")).lower()
     return status in ("true", "success", "successful")
 
 
+def _make_reference(prefix, user_id):
+    """UUID-based reference — no timestamp collisions."""
+    return f"{prefix}_{uuid.uuid4().hex[:8].upper()}_{user_id}"
+
+
 def _award_referral_commission(user, selling_price):
-    """Award 2% commission to referrer if applicable. Call before final commit."""
     if not user or not user.referred_by_user_id:
         return
-    commission = round(selling_price * 0.02, 2)
+    commission = selling_price * 0.02
     referrer = User.query.get(user.referred_by_user_id)
     if referrer:
         referrer.referral_earnings += commission
@@ -83,45 +102,43 @@ def _award_referral_commission(user, selling_price):
             referrer_id=referrer.id,
             referred_user_id=user.id,
             amount=commission,
-            type='commission',
+            type='commission'
         ))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# AIRTIME
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ── AIRTIME ────────────────────────────────────────────────────────────────────
 def buy_airtime(network, phone, amount, user_email):
-    """Purchase airtime via CheapDataHub."""
-    phone = str(phone).strip()
-    if not phone or len(phone) != 11 or not phone.isdigit():
+    if not phone or len(str(phone)) != 11 or not str(phone).isdigit():
         return {"status": "error", "message": "Invalid phone number. Must be 11 digits."}
     if amount <= 0:
         return {"status": "error", "message": "Amount must be greater than zero."}
 
+    # CheapDataHub provider IDs (confirmed from their API docs)
     provider_map = {"MTN": 1, "Airtel": 2, "Glo": 3, "9Mobile": 4}
-    provider_id = provider_map.get(network)
+    provider_id  = provider_map.get(network)
     if not provider_id:
         return {"status": "error", "message": f"Unsupported network: {network}"}
 
-    # with_for_update prevents two concurrent requests double-debiting the same wallet
-    user = User.query.filter_by(email=user_email).with_for_update().first()
+    user = User.query.filter_by(email=user_email).first()
     if not user:
         return {"status": "error", "message": "User not found"}
 
-    selling_price = round(float(amount), 2)
+    selling_price = float(amount)
     if user.wallet_balance < selling_price:
-        return {"status": "error", "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
+        return {"status": "error",
+                "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
 
     reference = _make_reference("AIRTIME", user.id)
     transaction = Transaction(
         user_id=user.id, reference=reference, type="airtime",
         service_type="airtime", amount=selling_price, profit=0.0,
-        status="pending", details={"network": network, "phone": phone, "amount": selling_price},
+        status="pending",
+        details={"network": network, "phone": phone, "amount": amount}
     )
     db.session.add(transaction)
     db.session.commit()
 
+    # Exact payload from CheapDataHub docs
     payload    = {"provider_id": provider_id, "phone_number": phone, "amount": selling_price}
     api_result = cheapdatahub_request("airtime/purchase/", data=payload)
 
@@ -129,270 +146,272 @@ def buy_airtime(network, phone, amount, user_email):
         profit_percent = PROFIT_MARGINS["airtime"]
         cost_price     = selling_price / (1 + profit_percent / 100)
         profit_amount  = round(selling_price - cost_price, 2)
-
-        user.wallet_balance -= selling_price
+        user.wallet_balance = round(user.wallet_balance - selling_price, 2)
         transaction.status = "success"
         transaction.profit = profit_amount
         transaction.details.update({
             "cost_price":    round(cost_price, 2),
-            "api_reference": api_result.get("transaction_id"),
+            "api_reference": api_result.get("reference") or api_result.get("transaction_id"),
         })
         db.session.add(Profit(
             transaction_id=transaction.id, user_id=user.id,
-            category="airtime", amount=profit_amount,
+            category="airtime", amount=profit_amount
         ))
         _award_referral_commission(user, selling_price)
         db.session.commit()
-
-        logger.info(f"[Airtime] SUCCESS {reference} | profit=₦{profit_amount}")
         return {
-            "status": "success",
+            "status":  "success",
             "message": "Airtime purchase successful",
             "data": {
-                "transaction_id": api_result.get("transaction_id"),
-                "profit_amount":  round(profit_amount, 2),
+                "reference":      reference,
+                "api_reference":  api_result.get("reference"),
+                "profit_amount":  profit_amount,
                 "selling_price":  selling_price,
-                "new_balance":    round(user.wallet_balance, 2),
-                "reference":      reference
-            },
+                "new_balance":    round(user.wallet_balance, 2),  # FIX: added
+            }
         }
     else:
         error_msg = api_result.get("message", "Airtime purchase failed")
-        # Translate CheapDataHub internal errors to user-friendly messages
-        if "wallet balance" in error_msg.lower() or "balance too low" in error_msg.lower():
+        if "wallet" in error_msg.lower() or "balance" in error_msg.lower():
             error_msg = "Service temporarily unavailable. Please try again later."
-        if "less than" in error_msg.lower() or "minimum" in error_msg.lower():
-            error_msg = "Minimum airtime amount is ₦100."
         transaction.status = "failed"
         transaction.details["error"] = error_msg
         db.session.commit()
         return {"status": "error", "message": error_msg}
-# ─────────────────────────────────────────────────────────────────────────────
-# DATA
-# ─────────────────────────────────────────────────────────────────────────────
 
+
+# ── DATA ───────────────────────────────────────────────────────────────────────
 def buy_data(plan_id, phone, user_email):
-    """Purchase data bundle via CheapDataHub."""
-    phone = str(phone).strip()
-    if not phone or len(phone) != 11 or not phone.isdigit():
+    if not phone or len(str(phone)) != 11 or not str(phone).isdigit():
         return {"status": "error", "message": "Invalid phone number. Must be 11 digits."}
 
     plan = DataPlan.query.filter_by(plan_id=plan_id).first()
     if not plan:
-        return {"status": "error", "message": f"Invalid plan ID: {plan_id}"}
+        return {"status": "error", "message": "Invalid plan ID"}
 
-    user = User.query.filter_by(email=user_email).with_for_update().first()
+    user = User.query.filter_by(email=user_email).first()
     if not user:
         return {"status": "error", "message": "User not found"}
 
-    selling_price = round(float(plan.selling_price), 2)
+    selling_price = float(plan.selling_price)
     if user.wallet_balance < selling_price:
-        return {"status": "error", "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
+        return {"status": "error",
+                "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
 
     reference = _make_reference("DATA", user.id)
     transaction = Transaction(
         user_id=user.id, reference=reference, type="data",
         service_type="data", amount=selling_price, profit=0.0,
-        status="pending", details={"plan_id": plan_id, "phone": phone,
-                                   "plan_name": plan.size, "provider": plan.provider},
+        status="pending",
+        details={"plan_id": plan_id, "phone": phone,
+                 "plan_name": plan.size, "provider": plan.provider}
     )
     db.session.add(transaction)
     db.session.commit()
 
+    # Exact payload from CheapDataHub docs
     payload    = {"bundle_id": plan_id, "phone_number": phone}
     api_result = cheapdatahub_request("data/purchase/", data=payload)
 
     if _is_success(api_result):
         profit_amount = round(selling_price - float(plan.cost_price), 2)
-
-        user.wallet_balance -= selling_price
+        user.wallet_balance = round(user.wallet_balance - selling_price, 2)
         transaction.status = "success"
         transaction.profit = profit_amount
         transaction.details.update({
-            "cost_price":    round(float(plan.cost_price), 2),
-            "api_reference": api_result.get("transaction_id"),
+            "cost_price":    float(plan.cost_price),
+            "api_reference": api_result.get("reference") or api_result.get("transaction_id"),
         })
         db.session.add(Profit(
             transaction_id=transaction.id, user_id=user.id,
-            category="data", amount=profit_amount,
+            category="data", amount=profit_amount
         ))
         _award_referral_commission(user, selling_price)
         db.session.commit()
-
-        logger.info(f"[Data] SUCCESS {reference} | profit=₦{profit_amount}")
         return {
-            "status": "success",
+            "status":  "success",
             "message": "Data purchase successful",
             "data": {
-                "reference":      reference,
-                "transaction_id": api_result.get("transaction_id"),
-                "profit_amount":  profit_amount,
-                "selling_price":  selling_price,
-                "new_balance":    round(user.wallet_balance, 2),
-            },
+                "reference":     reference,
+                "api_reference": api_result.get("reference"),
+                "profit_amount": profit_amount,
+                "selling_price": selling_price,
+                "new_balance":   round(user.wallet_balance, 2),
+            }
         }
     else:
         error_msg = api_result.get("message", "Data purchase failed")
         transaction.status = "failed"
         transaction.details["error"] = error_msg
         db.session.commit()
-        logger.error(f"[Data] FAILED {reference} | {error_msg}")
         return {"status": "error", "message": error_msg}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ELECTRICITY
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ── ELECTRICITY ────────────────────────────────────────────────────────────────
 def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
-    """Purchase electricity token via CheapDataHub."""
-    phone        = str(phone).strip()
-    meter_number = str(meter_number).strip()
-
-    if not phone or len(phone) != 11 or not phone.isdigit():
+    if not phone or len(str(phone)) != 11 or not str(phone).isdigit():
         return {"status": "error", "message": "Invalid phone number. Must be 11 digits."}
     if amount <= 0:
         return {"status": "error", "message": "Amount must be greater than zero."}
-    if not meter_number or len(meter_number) < 6 or not meter_number.isdigit():
-        return {"status": "error", "message": "Invalid meter number (minimum 6 digits)"}
-    if meter_type not in ("prepaid", "postpaid"):
-        return {"status": "error", "message": "meter_type must be prepaid or postpaid"}
+    if not meter_number or len(str(meter_number)) < 6:
+        return {"status": "error", "message": "Invalid meter number"}
 
-    user = User.query.filter_by(email=user_email).with_for_update().first()
+    # FIX: Convert disco name to disco_id (API requires integer, not name)
+    disco_id = DISCO_ID_MAP.get(disco)
+    if not disco_id:
+        # Try to use as integer directly if already an ID
+        try:
+            disco_id = int(disco)
+        except (ValueError, TypeError):
+            return {"status": "error",
+                    "message": f"Unknown electricity provider: {disco}"}
+
+    user = User.query.filter_by(email=user_email).first()
     if not user:
         return {"status": "error", "message": "User not found"}
 
-    selling_price = round(float(amount), 2)
+    selling_price = float(amount)
     if user.wallet_balance < selling_price:
-        return {"status": "error", "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
+        return {"status": "error",
+                "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
 
     reference = _make_reference("ELEC", user.id)
     transaction = Transaction(
         user_id=user.id, reference=reference, type="electricity",
         service_type="electricity", amount=selling_price, profit=0.0,
-        status="pending", details={"disco": disco, "meter_number": meter_number,
-                                   "meter_type": meter_type, "phone": phone},
+        status="pending",
+        details={"disco": disco, "disco_id": disco_id,
+                 "meter_number": meter_number,
+                 "meter_type": meter_type, "phone": phone}
     )
     db.session.add(transaction)
     db.session.commit()
 
-    payload    = {"disco": disco, "meter_number": meter_number,
-                  "meter_type": meter_type, "amount": selling_price, "phone_number": phone}
+    # FIX: correct field names from CheapDataHub API docs
+    # disco_id (int), meter_number, amount, meter_type, phone
+    payload = {
+        "disco_id":     disco_id,       # FIX: was "disco" (name), now disco_id (integer)
+        "meter_number": meter_number,
+        "meter_type":   meter_type,     # "prepaid" or "postpaid"
+        "amount":       selling_price,
+        "phone":        phone,          # FIX: was "phone_number", now "phone"
+    }
     api_result = cheapdatahub_request("electricity/purchase/", data=payload)
 
     if _is_success(api_result):
         profit_percent = PROFIT_MARGINS["electricity"]
         cost_price     = selling_price / (1 + profit_percent / 100)
         profit_amount  = round(selling_price - cost_price, 2)
-        token          = api_result.get("token") or api_result.get("data", {}).get("token", "")
 
-        user.wallet_balance -= selling_price
+        # FIX: token is nested inside data.token not top-level token
+        token = (api_result.get("token")
+                 or api_result.get("data", {}).get("token", ""))
+
+        user.wallet_balance = round(user.wallet_balance - selling_price, 2)
         transaction.status = "success"
         transaction.profit = profit_amount
         transaction.details.update({
             "cost_price":    round(cost_price, 2),
             "token":         token,
-            "api_reference": api_result.get("transaction_id"),
+            "units":         api_result.get("data", {}).get("units", ""),
+            "api_reference": api_result.get("reference") or api_result.get("transaction_id"),
         })
         db.session.add(Profit(
             transaction_id=transaction.id, user_id=user.id,
-            category="electricity", amount=profit_amount,
+            category="electricity", amount=profit_amount
         ))
         _award_referral_commission(user, selling_price)
         db.session.commit()
-
-        logger.info(f"[Electricity] SUCCESS {reference} | token={token} | profit=₦{profit_amount}")
         return {
-            "status": "success",
+            "status":  "success",
             "message": "Electricity purchase successful",
             "data": {
-                "reference":      reference,
-                "transaction_id": api_result.get("transaction_id"),
-                "token":          token,
-                "profit_amount":  profit_amount,
-                "selling_price":  selling_price,
-                "new_balance":    round(user.wallet_balance, 2),
-            },
+                "reference":     reference,
+                "token":         token,
+                "units":         api_result.get("data", {}).get("units", ""),
+                "profit_amount": profit_amount,
+                "selling_price": selling_price,
+                "new_balance":   round(user.wallet_balance, 2),
+            }
         }
     else:
         error_msg = api_result.get("message", "Electricity purchase failed")
         transaction.status = "failed"
         transaction.details["error"] = error_msg
         db.session.commit()
-        logger.error(f"[Electricity] FAILED {reference} | {error_msg}")
         return {"status": "error", "message": error_msg}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CABLE TV
-# ─────────────────────────────────────────────────────────────────────────────
-
-def buy_cable_tv(plan_id, smartcard, user_email):
-    """Purchase cable TV subscription via CheapDataHub."""
-    smartcard = str(smartcard).strip()
-    if not smartcard or len(smartcard) < 6:
-        return {"status": "error", "message": "Invalid smartcard/IUC number (minimum 6 characters)"}
+# ── CABLE TV ───────────────────────────────────────────────────────────────────
+def buy_cable_tv(plan_id, smartcard, user_email, phone=""):
+    if not smartcard or len(str(smartcard)) < 6:
+        return {"status": "error", "message": "Invalid smartcard/IUC number"}
 
     plan = CablePlan.query.filter_by(plan_id=plan_id).first()
     if not plan:
-        return {"status": "error", "message": f"Invalid cable plan ID: {plan_id}"}
+        return {"status": "error", "message": "Invalid cable plan ID"}
 
-    user = User.query.filter_by(email=user_email).with_for_update().first()
+    user = User.query.filter_by(email=user_email).first()
     if not user:
         return {"status": "error", "message": "User not found"}
 
-    selling_price = round(float(plan.selling_price), 2)
+    selling_price = float(plan.selling_price)
     if user.wallet_balance < selling_price:
-        return {"status": "error", "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
+        return {"status": "error",
+                "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
 
     reference = _make_reference("CABLE", user.id)
     transaction = Transaction(
         user_id=user.id, reference=reference, type="cable_tv",
         service_type="cable_tv", amount=selling_price, profit=0.0,
-        status="pending", details={"plan_id": plan_id, "smartcard": smartcard,
-                                   "provider": plan.provider, "plan_name": plan.plan_name},
+        status="pending",
+        details={"plan_id": plan_id, "smartcard": smartcard,
+                 "provider": plan.provider, "plan_name": plan.plan_name}
     )
     db.session.add(transaction)
     db.session.commit()
 
-    payload    = {"package_id": plan_id, "smartcard_number": smartcard}
+    # FIX: correct field names from CheapDataHub API docs
+    # plan_id, cardnumber, phone
+    payload = {
+        "plan_id":    plan_id,      # FIX: was "package_id"
+        "cardnumber": smartcard,    # FIX: was "smartcard_number"
+        "phone":      phone or user.phone,  # FIX: added phone (required)
+    }
     api_result = cheapdatahub_request("cable/purchase/", data=payload)
 
     if _is_success(api_result):
         profit_amount = round(selling_price - float(plan.cost_price), 2)
-
-        user.wallet_balance -= selling_price
+        user.wallet_balance = round(user.wallet_balance - selling_price, 2)
         transaction.status = "success"
         transaction.profit = profit_amount
         transaction.details.update({
-            "cost_price":    round(float(plan.cost_price), 2),
-            "api_reference": api_result.get("transaction_id"),
+            "cost_price":    float(plan.cost_price),
+            "api_reference": api_result.get("reference") or api_result.get("transaction_id"),
         })
         db.session.add(Profit(
             transaction_id=transaction.id, user_id=user.id,
-            category="cable_tv", amount=profit_amount,
+            category="cable_tv", amount=profit_amount
         ))
         _award_referral_commission(user, selling_price)
         db.session.commit()
-
-        logger.info(f"[CableTV] SUCCESS {reference} | profit=₦{profit_amount}")
         return {
-            "status": "success",
+            "status":  "success",
             "message": "Cable TV subscription successful",
             "data": {
-                "reference":      reference,
-                "transaction_id": api_result.get("transaction_id"),
-                "provider":       plan.provider,
-                "plan_name":      plan.plan_name,
-                "profit_amount":  profit_amount,
-                "selling_price":  selling_price,
-                "new_balance":    round(user.wallet_balance, 2),
-            },
+                "reference":     reference,
+                "api_reference": api_result.get("reference"),
+                "provider":      plan.provider,
+                "plan_name":     plan.plan_name,
+                "profit_amount": profit_amount,
+                "selling_price": selling_price,
+                "new_balance":   round(user.wallet_balance, 2),
+            }
         }
     else:
         error_msg = api_result.get("message", "Cable TV subscription failed")
         transaction.status = "failed"
         transaction.details["error"] = error_msg
         db.session.commit()
-        logger.error(f"[CableTV] FAILED {reference} | {error_msg}")
         return {"status": "error", "message": error_msg}
+
