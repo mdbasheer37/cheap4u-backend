@@ -296,8 +296,8 @@ def request_withdrawal():
     except (TypeError, ValueError):
         return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
 
-    if amount < 1000:
-        return jsonify({'status': 'error', 'message': 'Minimum withdrawal is ₦1,000'}), 400
+    if amount < 50:
+        return jsonify({'status': 'error', 'message': 'Minimum withdrawal is ₦50'}), 400
     if amount > 500_000:
         return jsonify({'status': 'error', 'message': 'Maximum withdrawal is ₦500,000'}), 400
 
