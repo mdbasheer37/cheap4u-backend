@@ -114,7 +114,7 @@ def buy_airtime(network, phone, amount, user_email):
         return {"status": "error", "message": "Amount must be greater than zero."}
 
     # CheapDataHub provider IDs (confirmed from their API docs)
-    provider_map = {"MTN": 1, "Airtel": 2, "Glo": 3, "9Mobile": 4}
+    provider_map = {"MTN": 1, "Glo": 2, "Airtel": 3, "9Mobile": 4}
     provider_id  = provider_map.get(network)
     if not provider_id:
         return {"status": "error", "message": f"Unsupported network: {network}"}
@@ -414,4 +414,3 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone=""):
         transaction.details["error"] = error_msg
         db.session.commit()
         return {"status": "error", "message": error_msg}
-
