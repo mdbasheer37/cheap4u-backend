@@ -10,7 +10,7 @@ from functools import wraps
 
 logger = logging.getLogger(__name__)
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
-ADMIN_EMAILS = ['admin@cheap4u.com', 'muhammadibrahim376@gmail.com']
+ADMIN_EMAILS = ['admin@cheap4u.com', 'muhammadibrahim3766@gmail.com']
 
 # Mobile money banks — skip Paystack account resolve for these
 SKIP_VERIFY_BANKS = {
