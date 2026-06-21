@@ -1,4 +1,3 @@
-
 # admin.py — Self-contained: transfer logic built-in, no external imports needed
 import logging
 import requests as _requests
@@ -11,7 +10,7 @@ from functools import wraps
 
 logger = logging.getLogger(__name__)
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
-ADMIN_EMAILS = ['admin@cheap4u.com', 'muhammadibrahim3766@gmail.com']
+ADMIN_EMAILS = ['admin@cheap4u.com', 'muhammadibrahim376@gmail.com']
 
 # Mobile money banks — skip Paystack account resolve for these
 SKIP_VERIFY_BANKS = {
@@ -62,7 +61,10 @@ def _create_recipient(secret, account_number, bank_code, account_name):
         'account_number': account_number,
         'bank_code': str(bank_code), 'currency': 'NGN',
     })
-    return result['data']['recipient_code'] if ok else None
+    if ok:
+        return result['data']['recipient_code']
+    logger.error(f'Recipient failed [{bank_code}/{account_number}]: {result}')
+    return None, result.get('message', 'Unknown error')
 
 
 def _do_transfer(secret, recipient_code, amount, reason, reference):
@@ -282,7 +284,15 @@ def request_withdrawal():
     db.session.commit()
 
     # Step 3: Create transfer recipient
-    recipient_code = _create_recipient(secret, account_number, bank_code, account_name)
+    recipient_result = _create_recipient(secret, account_number, bank_code, account_name)
+    if isinstance(recipient_result, tuple):
+        recipient_code, recipient_err = recipient_result
+        withdrawal.status = 'failed'
+        txn.status = 'failed'
+        db.session.commit()
+        return jsonify({'status': 'error',
+                        'message': f'Bank recipient error: {recipient_err}'}), 500
+    recipient_code = recipient_result
     if not recipient_code:
         withdrawal.status = 'failed'
         txn.status = 'failed'
