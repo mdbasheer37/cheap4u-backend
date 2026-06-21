@@ -76,6 +76,7 @@ def create_app():
             return phone
         return None
         
+    @app.route('/run-migration', methods=['GET'])     
     def run_migration():
         try:
             db.session.execute(db.text(
