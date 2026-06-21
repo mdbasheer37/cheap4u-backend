@@ -75,7 +75,18 @@ def create_app():
         elif phone.startswith('234') and len(phone) == 13 and phone.isdigit():
             return phone
         return None
-
+        
+    def run_migration():
+        try:
+            db.session.execute(db.text(
+                "ALTER TABLE withdrawal_requests "
+                "ADD COLUMN IF NOT EXISTS transfer_code VARCHAR(100);"
+        ))
+            db.session.commit()
+            return jsonify({'status': 'success', 'message': 'Column added!'})
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': str(e)}) 
+        
     @app.route('/api/debug/check-config', methods=['GET'])
     def debug_check_config():
         api_key = app.config.get('TERMII_API_KEY', '').strip()
