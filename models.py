@@ -159,7 +159,7 @@ class WithdrawalRequest(db.Model):
     created_at     = db.Column(db.DateTime, default=datetime.utcnow)
     processed_at   = db.Column(db.DateTime)
     user = db.relationship('User', backref='withdrawals')
-    transfer_code = db.Column(db.String(100), nullable=True) 
+ 
 
 class DataPlan(db.Model):
     __tablename__ = 'data_plans'
