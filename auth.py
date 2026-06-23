@@ -330,4 +330,113 @@ def verify_pin():
     if bcrypt.checkpw(pin.encode(), user.transaction_pin_hash.encode()):
         return jsonify({'status': 'success', 'message': 'PIN verified'})
     return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 401
+# ═══════════════════════════════════════════════════════════════════════
+# ADD THESE ROUTES TO auth.py
+# Password reset via OTP (no email link needed — uses SMS OTP)
+# ═══════════════════════════════════════════════════════════════════════
 
+import secrets
+
+# ── Step 1: Request password reset OTP ───────────────────────────────
+@auth_bp.route('/forgot-password', methods=['POST'])
+def forgot_password():
+    """
+    User enters their email/phone → backend sends OTP to their phone.
+    POST body: {"email": "..."} or {"phone": "..."}
+    """
+    data  = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    phone = (data.get('phone') or '').strip()
+
+    user = None
+    if email:
+        user = User.query.filter_by(email=email).first()
+    elif phone:
+        user = User.query.filter_by(phone=phone).first()
+
+    if not user:
+        # Don't reveal if user exists — always return success
+        return jsonify({
+            'status':  'success',
+            'message': 'If this account exists, an OTP has been sent.',
+        })
+
+    if not can_resend_otp(user.id):
+        return jsonify({
+            'status':  'error',
+            'message': 'Please wait 60 seconds before requesting another OTP.',
+        }), 429
+
+    # Send OTP via SMS
+    sms_sent, _ = _send_otp(user, purpose='password_reset')
+
+    if not sms_sent:
+        return jsonify({
+            'status':  'error',
+            'message': 'Could not send OTP. Check your phone number.',
+        }), 500
+
+    return jsonify({
+        'status':  'success',
+        'message': f'OTP sent to {user.phone[-4:].rjust(len(user.phone), "*")}',
+        'data':    {'user_id': user.id, 'phone': user.phone},
+    })
+
+
+# ── Step 2: Verify OTP and reset password ────────────────────────────
+@auth_bp.route('/reset-password', methods=['POST'])
+def reset_password():
+    """
+    Verify OTP + set new password.
+    POST body: {"user_id": 1, "otp_code": "123456", "new_password": "abc123"}
+    """
+    data         = request.get_json() or {}
+    user_id      = data.get('user_id')
+    otp_code     = data.get('otp_code', '').strip()
+    new_password = data.get('new_password', '').strip()
+
+    if not all([user_id, otp_code, new_password]):
+        return jsonify({
+            'status':  'error',
+            'message': 'user_id, otp_code and new_password are required',
+        }), 400
+
+    if len(new_password) < 6:
+        return jsonify({
+            'status':  'error',
+            'message': 'Password must be at least 6 characters',
+        }), 400
+
+    # Verify OTP
+    otp = OTP.query.filter_by(
+        user_id = user_id,
+        code    = otp_code,
+        is_used = False,
+        purpose = 'password_reset',
+    ).first()
+
+    if not otp:
+        return jsonify({'status': 'error', 'message': 'Invalid OTP code'}), 400
+
+    if datetime.utcnow() > otp.expires_at:
+        return jsonify({
+            'status':  'error',
+            'message': 'OTP has expired. Request a new one.',
+        }), 400
+
+    # Update password
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+    user.set_password(new_password)
+    otp.is_used = True
+    db.session.commit()
+
+    # Auto-login after reset
+    token = create_access_token(identity=str(user.id))
+    return jsonify({
+        'status':  'success',
+        'message': 'Password reset successfully!',
+        'data':    {'session_token': token, 'user': user.to_dict()},
+    })
