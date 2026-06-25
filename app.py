@@ -75,7 +75,95 @@ def create_app():
         elif phone.startswith('234') and len(phone) == 13 and phone.isdigit():
             return phone
         return None
-        
+     
+    @app.route('/api/debug/fix-referral-bonus', methods=['GET'])   
+    def fix_referral_bonus():
+        """
+        Force-pay ₦50 referral bonus to a specific referrer
+        for ALL users they referred, regardless of referral_bonus_claimed flag.
+        """
+        from models import db, User, ReferralTransaction
+        import json
+
+        referrer_id = request.args.get('referrer_id', type=int)
+        if not referrer_id:
+            # Show all referrers and their referred users
+            referrers = db.session.query(
+                User.id, User.name, User.email,
+                User.referral_balance, User.referral_earnings
+            ).filter(
+                User.id.in_(
+                    db.session.query(User.referred_by_user_id).filter(
+                        User.referred_by_user_id != None
+                    )
+                )
+            ).all()
+            return jsonify({
+                'referrers': [{
+                    'id': r.id, 'name': r.name, 'email': r.email,
+                    'referral_balance': r.referral_balance,
+                    'referral_earnings': r.referral_earnings,
+                    'referred_users': [{
+                        'id': u.id, 'name': u.name,
+                        'wallet_balance': u.wallet_balance,
+                        'bonus_claimed': u.referral_bonus_claimed,
+                    } for u in User.query.filter_by(referred_by_user_id=r.id).all()]
+                } for r in referrers],
+                'usage': 'Add ?referrer_id=X to pay bonus to that referrer'
+            })
+
+        referrer = User.query.get(referrer_id)
+        if not referrer:
+            return jsonify({'error': f'Referrer {referrer_id} not found'})
+
+        referred_users = User.query.filter_by(referred_by_user_id=referrer_id).all()
+        results = []
+        total_paid = 0.0
+
+        for user in referred_users:
+            # Pay ₦50 for EVERY referred user (reset and repay)
+            bonus = 50.0
+            referrer.referral_balance  = round(referrer.referral_balance + bonus, 2)
+            referrer.referral_earnings = round(referrer.referral_earnings + bonus, 2)
+            user.referral_bonus_claimed = True
+
+            # Check if ReferralTransaction already exists
+            existing = ReferralTransaction.query.filter_by(
+                referrer_id=referrer_id,
+                referred_user_id=user.id,
+                type='signup_bonus',
+            ).first()
+
+            if not existing:
+                db.session.add(ReferralTransaction(
+                    referrer_id      = referrer_id,
+                    referred_user_id = user.id,
+                    amount           = bonus,
+                    type             = 'signup_bonus',
+                ))
+
+            total_paid += bonus
+            results.append({
+                'user_id':   user.id,
+                'user_name': user.name,
+                'bonus_paid': bonus,
+                'had_existing_tx': existing is not None,
+            })
+
+        db.session.commit()
+
+        return jsonify({
+            'status':   'success',
+            'referrer': {
+                'id':               referrer.id,
+                'name':             referrer.name,
+                'referral_balance': referrer.referral_balance,
+                'referral_earnings': referrer.referral_earnings,
+            },
+            'total_paid':    total_paid,
+            'users_paid':    results,
+            'message':       f'₦{total_paid:,.2f} added to {referrer.name} referral balance',
+        })    
     @app.route('/run-migration', methods=['GET'])     
     def run_migration():
         try:
