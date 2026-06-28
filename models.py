@@ -39,6 +39,8 @@ class User(db.Model):
     transaction_pin_hash    = db.Column(db.String(200), nullable=True)
     created_at              = db.Column(db.DateTime, default=datetime.utcnow)
     last_login              = db.Column(db.DateTime, default=datetime.utcnow)
+    failed_login_count = db.Column(db.Integer, default=0)
+    locked_until       = db.Column(db.DateTime, nullable=True) 
 
     referrer = db.relationship('User', remote_side=[id], backref='referred_users')
 
@@ -103,7 +105,21 @@ class Transaction(db.Model):
             'created_at':   self.created_at.isoformat() if self.created_at else None,
         }
 
+class TokenBlocklist(db.Model):
+    """
+    Stores revoked JWT tokens for logout functionality.
+    JWTManager checks this via the token_in_blocklist_loader callback.
+    """
+    __tablename__ = 'token_blocklist'
 
+    id         = db.Column(db.Integer, primary_key=True)
+    jti        = db.Column(db.String(36), unique=True, nullable=False, index=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<TokenBlocklist jti={self.jti}>'
+        
 class OTP(db.Model):
     __tablename__ = 'otps'
     id         = db.Column(db.Integer, primary_key=True)
