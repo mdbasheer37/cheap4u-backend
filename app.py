@@ -203,18 +203,36 @@ def create_app():
             'total_paid':    total_paid,
             'users_paid':    results,
             'message':       f'₦{total_paid:,.2f} added to {referrer.name} referral balance',
-        })    
-    @app.route('/run-migration', methods=['GET'])     
-    def run_migration():
+        })   
+
+    @app.route('/run-migration-blocklist', methods=['GET'])
+    def run_migration_blocklist():
         try:
-            db.session.execute(db.text(
-                "ALTER TABLE withdrawal_requests "
-                "ADD COLUMN IF NOT EXISTS transfer_code VARCHAR(100);"
-        ))
+            db.session.execute(db.text('''
+                CREATE TABLE IF NOT EXISTS token_blocklist (
+                    id         SERIAL PRIMARY KEY,
+                    jti        VARCHAR(36) UNIQUE NOT NULL,
+                    user_id    INTEGER REFERENCES users(id),
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_token_blocklist_jti ON token_blocklist(jti);
+            '''))
             db.session.commit()
-            return jsonify({'status': 'success', 'message': 'Column added!'})
+            return jsonify({'status': 'success', 'message': 'token_blocklist table created!'})
         except Exception as e:
-            return jsonify({'status': 'error', 'message': str(e)}) 
+            return jsonify({'status': 'error', 'message': str(e)})
+            
+  #  @app.route('/run-migration', methods=['GET'])     
+  #  def run_migration():
+       # try:
+            #db.session.execute(db.text(
+             #   "ALTER TABLE withdrawal_requests "
+       #         "ADD COLUMN IF NOT EXISTS transfer_code VARCHAR(100);"
+      #  ))
+        #    db.session.commit()
+      #      return jsonify({'status': 'success', 'message': 'Column added!'})
+     #   except Exception as e:
+         #   return jsonify({'status': 'error', 'message': str(e)}) 
         
     @app.route('/api/debug/check-config', methods=['GET'])
     def debug_check_config():
