@@ -1,5 +1,4 @@
 # app.py
-import psycopg2
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
@@ -25,46 +24,6 @@ def create_app():
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     db.init_app(app)
     JWTManager(app)
-    jwt = JWTManager(app)
-
-    @jwt.token_in_blocklist_loader
-    def check_if_token_revoked(jwt_header, jwt_payload):
-        jti = jwt_payload['jti']
-        from models import TokenBlocklist
-        token = TokenBlocklist.query.filter_by(jti=jti).first()
-        return token is not None
-
-    @jwt.expired_token_loader
-    def expired_token_callback(jwt_header, jwt_payload):
-        return jsonify({
-            'status':  'error',
-            'message': 'Token expired. Please login again.',
-            'code':    'TOKEN_EXPIRED',
-        }), 401
-
-    @jwt.invalid_token_loader
-    def invalid_token_callback(error):
-        return jsonify({
-            'status':  'error',
-            'message': 'Invalid token. Please login again.',
-            'code':    'TOKEN_INVALID',
-        }), 401
-
-    @jwt.unauthorized_loader
-    def missing_token_callback(error):
-        return jsonify({
-            'status':  'error',
-            'message': 'Authorization token required.',
-            'code':    'TOKEN_MISSING',
-        }), 401
-
-    @jwt.revoked_token_loader
-    def revoked_token_callback(jwt_header, jwt_payload):
-        return jsonify({
-            'status':  'error',
-            'message': 'Token has been revoked. Please login again.',
-            'code':    'TOKEN_REVOKED',
-        }), 401
 
     # ── Register blueprints ──────────────────────────────────────────
     from auth import auth_bp
@@ -204,36 +163,18 @@ def create_app():
             'total_paid':    total_paid,
             'users_paid':    results,
             'message':       f'₦{total_paid:,.2f} added to {referrer.name} referral balance',
-        })   
-
-    @app.route('/run-migration-blocklist', methods=['GET'])
-    def run_migration_blocklist():
+        })    
+    @app.route('/run-migration', methods=['GET'])     
+    def run_migration():
         try:
-            db.session.execute(db.text('''
-                CREATE TABLE IF NOT EXISTS token_blocklist (
-                    id         SERIAL PRIMARY KEY,
-                    jti        VARCHAR(36) UNIQUE NOT NULL,
-                    user_id    INTEGER REFERENCES users(id),
-                    created_at TIMESTAMP DEFAULT NOW()
-                );
-                CREATE INDEX IF NOT EXISTS idx_token_blocklist_jti ON token_blocklist(jti);
-            '''))
+            db.session.execute(db.text(
+                "ALTER TABLE withdrawal_requests "
+                "ADD COLUMN IF NOT EXISTS transfer_code VARCHAR(100);"
+        ))
             db.session.commit()
-            return jsonify({'status': 'success', 'message': 'token_blocklist table created!'})
+            return jsonify({'status': 'success', 'message': 'Column added!'})
         except Exception as e:
-            return jsonify({'status': 'error', 'message': str(e)})
-            
-  #  @app.route('/run-migration', methods=['GET'])     
-  #  def run_migration():
-       # try:
-            #db.session.execute(db.text(
-             #   "ALTER TABLE withdrawal_requests "
-       #         "ADD COLUMN IF NOT EXISTS transfer_code VARCHAR(100);"
-      #  ))
-        #    db.session.commit()
-      #      return jsonify({'status': 'success', 'message': 'Column added!'})
-     #   except Exception as e:
-         #   return jsonify({'status': 'error', 'message': str(e)}) 
+            return jsonify({'status': 'error', 'message': str(e)}) 
         
     @app.route('/api/debug/check-config', methods=['GET'])
     def debug_check_config():
