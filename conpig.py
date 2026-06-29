@@ -15,15 +15,9 @@ def _fix_db_url(url):
 
 
 class Config:
-    JWT_SECRET_KEY              = os.getenv('JWT_SECRET_KEY', 'cheap4u-jwt-key-change-in-production')
-    JWT_ACCESS_TOKEN_EXPIRES    = timedelta(hours=24)      # was 7 days — shorter is safer
-    JWT_REFRESH_TOKEN_EXPIRES   = timedelta(days=30)       # refresh tokens last 30 days
-    JWT_TOKEN_LOCATION          = ['headers']
-    JWT_HEADER_NAME             = 'Authorization'
-    JWT_HEADER_TYPE             = 'Bearer'
-    JWT_BLACKLIST_ENABLED       = True
-    JWT_BLACKLIST_TOKEN_CHECKS  = ['access', 'refresh']
-
+    SECRET_KEY               = os.getenv('SECRET_KEY', 'cheap4u-secret-key')
+    JWT_SECRET_KEY           = os.getenv('JWT_SECRET_KEY', 'cheap4u-jwt-key')
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(days=7)
 
     # Database — use os.environ directly (bypasses dotenv caching)
     # Tries DATABASE_URL first, then falls back to SQLite
