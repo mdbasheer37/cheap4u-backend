@@ -24,12 +24,22 @@ class Config:
     _raw_url = os.environ.get('DATABASE_URL') or os.getenv('DATABASE_URL', '')
     SQLALCHEMY_DATABASE_URI = _fix_db_url(_raw_url) or 'sqlite:///database.db'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    # Connection pool settings to handle Render's cold starts
-    SQLALCHEMY_ENGINE_OPTIONS = {
-        'pool_pre_ping': True,
-        'pool_recycle':  300,
-        'connect_args':  {'connect_timeout': 10},
-    }
+
+    # Connection pool settings to handle Render's cold starts.
+    # 'connect_timeout' is a psycopg2 (Postgres)-only kwarg — it breaks
+    # sqlite3.connect() if DATABASE_URL is ever missing/invalid and we
+    # silently fall back to SQLite. Only apply it for Postgres.
+    if SQLALCHEMY_DATABASE_URI.startswith('postgresql'):
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            'pool_pre_ping': True,
+            'pool_recycle':  300,
+            'connect_args':  {'connect_timeout': 10},
+        }
+    else:
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            'pool_pre_ping': True,
+            'pool_recycle':  300,
+        }
 
     PAYSTACK_SECRET_KEY  = os.getenv('PAYSTACK_SECRET_KEY', '')
     PAYSTACK_PUBLIC_KEY  = os.getenv('PAYSTACK_PUBLIC_KEY', '')
