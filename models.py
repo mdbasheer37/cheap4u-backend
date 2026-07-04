@@ -171,6 +171,11 @@ class DataPlan(db.Model):
     duration      = db.Column(db.String(50))
     selling_price = db.Column(db.Float, nullable=False)
     cost_price    = db.Column(db.Float, nullable=False)
+    # NEW: tags each plan as SME / Gifting / Corporate / SME2 / CG / Regular etc, so the
+    # frontend's data-type tabs actually filter to different plans instead of all
+    # showing the same list. Defaults to "Gifting" for existing rows since that's the
+    # standard tier all current plans were seeded as.
+    plan_type     = db.Column(db.String(30), nullable=False, default='Gifting')
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
 
 
