@@ -75,7 +75,39 @@ def create_app():
         elif phone.startswith('234') and len(phone) == 13 and phone.isdigit():
             return phone
         return None
-     
+
+    @app.route('/api/debug/add-plan-type-column', methods=['GET'])
+    def add_plan_type_column():
+        """
+        ONE-TIME MIGRATION: adds the new plan_type column to the existing
+        data_plans table on the live database. db.create_all() only creates
+        tables that don't exist yet - it never ALTERs an existing table, so
+        this has to be run manually once after deploying the plan_type
+        model change.
+
+        Visit this URL once (GET request) after deploying, then it's safe
+        to leave in place - it's idempotent (IF NOT EXISTS) and can be
+        called repeatedly without harm. You can delete this route later.
+        """
+        from sqlalchemy import text
+        try:
+            with db.engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE data_plans ADD COLUMN IF NOT EXISTS "
+                    "plan_type VARCHAR(30) NOT NULL DEFAULT 'Gifting'"
+                ))
+                conn.commit()
+            # Re-run seed/backfill so plan_type values match init_plans.py
+            from init_plans import init_data_plans
+            init_data_plans()
+            return jsonify({
+                'status': 'success',
+                'message': 'plan_type column added (or already existed) and plans backfilled.'
+            })
+        except Exception as e:
+            logger.error(f'add_plan_type_column error: {e}')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
     @app.route('/api/debug/fix-referral-bonus', methods=['GET'])   
     def fix_referral_bonus():
         """
