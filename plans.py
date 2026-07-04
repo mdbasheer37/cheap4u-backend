@@ -14,7 +14,8 @@ def get_data_plans():
             'size': p.size,
             'duration': p.duration,
             'selling_price': p.selling_price,
-            'cost_price': p.cost_price
+            'cost_price': p.cost_price,
+            'type': p.plan_type or 'Gifting'
         } for p in plans]
     })
 
