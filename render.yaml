@@ -1,0 +1,63 @@
+services:
+  - type: web
+    name: cheap4u-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cheap4u-db
+          property: connectionString
+
+      - key: PYTHON_VERSION
+        value: 3.11.0
+
+      - key: SECRET_KEY
+        generateValue: true
+
+      - key: JWT_SECRET_KEY
+        generateValue: true
+
+      - key: BACKEND_URL
+        value: https://cheap4u-backend.onrender.com
+
+      - key: TERMII_API_KEY
+        sync: false
+
+      - key: TERMII_SENDER_ID
+        value: Cheap4uApp
+
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+
+      - key: CHEAPDATAHUB_API_KEY
+        sync: false
+
+      - key: CHEAPDATAHUB_BASE_URL
+        value: https://www.cheapdatahub.ng/api/v1/resellers/
+
+      - key: VTUNAIJA_API_KEY
+        sync: false
+
+      - key: VTUNAIJA_BASE_URL
+        value: https://vtunaija.com.ng/api
+
+      - key: PROFIT_MARGIN_AIRTIME
+        value: "5"
+
+      - key: PROFIT_MARGIN_ELECTRICITY
+        value: "5"
+
+      - key: PROFIT_MARGIN_EXAM_PIN
+        value: "10"
+
+databases:
+  - name: cheap4u-db
+    plan: free
