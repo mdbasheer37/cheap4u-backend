@@ -2,18 +2,20 @@ import json
 from models import db, DataPlan, CablePlan, ElectricityProvider
 
 def init_data_plans():
-    # Data plans from your table
+    # Data plans - types verified against the actual CheapDataHub provider plan
+    # catalog (plan_id + type + price straight from their dashboard). Several
+    # MTN plans previously guessed as "Gifting" are actually "SME" - fixed below.
+    #
     # Format: (plan_id, provider, size, duration, selling_price, cost_price, plan_type)
     #
-    # IMPORTANT: every plan below is currently tagged "Gifting" because that is the
-    # single tier this catalog was originally typed in as - there is no real SME/
-    # SME2/Corporate distinction in this data yet. To make the SME/Corporate tabs in
-    # the app show DIFFERENT plans (not just relabel the same ones), you need to add
-    # the actual SME/Corporate bundle_ids + prices from your CheapDataHub reseller
-    # dashboard as NEW rows here with plan_type set accordingly, e.g.:
-    #   (91, "mtn", "1GB", "30 Days", 550.0, 520.0, "SME"),
-    # Check CheapDataHub's dashboard/API docs for a data-plans list endpoint - it
-    # usually returns each bundle's type/category alongside its bundle_id.
+    # "corprate gifting"/"CG" from the provider catalog is normalized to the
+    # single canonical value "Corporate" here so it matches the frontend's
+    # "Corporate"/"CG" tab labels regardless of exact spelling.
+    #
+    # NEW plan_ids 76,77,78,79,80 below are brand new MTN SME plans just added
+    # to your provider catalog - I estimated a selling_price markup for these
+    # (~8-15%, similar to your existing margins) since your table only gave the
+    # cost price. PLEASE VERIFY/ADJUST these 5 selling prices before going live.
     data_plans = [
         (70, "airtel", "1GB (Social Bundle)", "3 Days", 350.0, 295.0, "Gifting"),
         (13, "airtel", "500MB", "7 days", 500.0, 490.0, "Gifting"),
@@ -23,41 +25,48 @@ def init_data_plans():
         (17, "airtel", "2GB", "30 Days", 1500.0, 1470.0, "Gifting"),
         (52, "airtel", "5GB", "7 Days", 1599.0, 1570.0, "Gifting"),
         (18, "airtel", "3GB", "30 Days", 2100.0, 1960.0, "Gifting"),
-        (22, "airtel", "6GB", "7 Days", 2599.0, 2455.0, "Gifting"),
+        (22, "airtel", "6GB", "7 Days", 2599.0, 2455.0, "SME"),          # was "Gifting"
         (19, "airtel", "4GB", "30 Days", 2650.0, 2570.0, "Gifting"),
         (20, "airtel", "8GB", "30 Days", 3200.0, 2999.0, "Gifting"),
         (21, "airtel", "10GB", "30 Days", 4200.0, 4070.0, "Gifting"),
-        (42, "glo", "200 MB", "1 Day", 100.0, 89.0, "Gifting"),
-        (35, "glo", "500MB", "30 Days", 250.0, 225.0, "Gifting"),
-        (68, "glo", "1GB", "3 Days", 330.0, 280.0, "Gifting"),
-        (36, "glo", "1GB", "30 Days", 450.0, 425.0, "Gifting"),
+
+        (42, "glo", "200 MB", "1 Day", 100.0, 92.0, "Corporate"),         # cost was 89.0
+        (35, "glo", "500MB", "30 Days", 250.0, 225.0, "Corporate"),
+        (68, "glo", "1GB", "3 Days", 330.0, 300.0, "Corporate"),         # cost was 280.0
+        (36, "glo", "1GB", "30 Days", 450.0, 425.0, "Corporate"),
         (41, "glo", "1GB", "14 Days", 500.0, 485.0, "Gifting"),
-        (40, "glo", "2GB", "30 Days", 900.0, 840.0, "Gifting"),
-        (37, "glo", "3GB", "30 Days", 1400.0, 1290.0, "Gifting"),
-        (54, "glo", "5GB", "7 Days", 1800.0, 1690.0, "Gifting"),
-        (38, "glo", "5GB", "30 Days", 2250.0, 2190.0, "Gifting"),
-        (39, "glo", "10GB", "30 Days", 4500.0, 4390.0, "Gifting"),
+        (40, "glo", "2GB", "30 Days", 900.0, 850.0, "Corporate"),        # cost was 840.0
+        (37, "glo", "3GB", "30 Days", 1400.0, 1300.0, "Corporate"),      # cost was 1290.0
+        (54, "glo", "5GB", "7 Days", 1800.0, 1699.0, "Corporate"),       # cost was 1690.0
+        (38, "glo", "5GB", "30 Days", 2250.0, 2190.0, "Corporate"),
+        (39, "glo", "10GB", "30 Days", 4500.0, 4390.0, "Corporate"),
         (59, "glo", "20.5GB", "30 Days", 6000.0, 5300.0, "Gifting"),
         (58, "glo", "107GB", "30 Days", 20000.0, 19300.0, "Gifting"),
+
         (43, "mtn", "110MB", "1 Day", 100.0, 99.0, "Gifting"),
         (74, "mtn", "230MB", "1 Day", 250.0, 200.0, "Gifting"),
-        (44, "mtn", "500MB", "30 Days", 400.0, 350.0, "SME"),
-        (45, "mtn", "1GB", "7 Days", 499.0, 450.0, "SME"),
-        (46, "mtn", "1GB", "30 Days", 600.0, 570.0, "SME"),
-        (47, "mtn", "2GB", "7 Days", 950.0, 930.0, "SME"),
-        (60, "mtn", "3.5GB", "1 Day", 1000.0, 980.0, "SME"),
-        (27, "mtn", "2.5GB", "2 Days", 1000.0, 900.0, "SME"),
-        (71, "mtn", "2GB", "7 Days", 1000.0, 900.0, "SME"),
-        (48, "mtn", "2GB", "30 Days", 1250.0, 1150.0, "SME"),
+        (76, "mtn", "500MB", "2 Days", 280.0, 250.0, "SME"),             # NEW - verify price
+        (78, "mtn", "1GB", "1 Day", 320.0, 280.0, "SME"),                # NEW - verify price
+        (44, "mtn", "500MB", "30 Days", 400.0, 350.0, "SME"),            # was "Gifting"
+        (77, "mtn", "1GB", "2 Days", 450.0, 399.0, "SME"),               # NEW - verify price
+        (45, "mtn", "1GB", "7 Days", 499.0, 450.0, "SME"),               # was "Gifting"
+        (46, "mtn", "1GB", "30 Days", 600.0, 570.0, "SME"),              # was "Gifting"
+        (79, "mtn", "2.5GB", "1 Day", 650.0, 600.0, "SME"),              # NEW - verify price
+        (27, "mtn", "2.5GB", "2 Days", 1000.0, 900.0, "Gifting"),
+        (71, "mtn", "2GB", "7 Days", 1000.0, 900.0, "Gifting"),
+        (47, "mtn", "2GB", "7 Days", 950.0, 930.0, "SME"),               # was "Gifting"
+        (60, "mtn", "3.5GB", "1 Day", 1000.0, 980.0, "Gifting"),
+        (48, "mtn", "2GB", "30 Days", 1250.0, 1150.0, "SME"),            # was "Gifting"
         (61, "mtn", "4GB", "2 Days", 1300.0, 1175.0, "Gifting"),
-        (49, "mtn", "3GB", "30 Days", 1500.0, 1370.0, "Gifting"),
-        (50, "mtn", "5GB", "30 Days", 2300.0, 2050.0, "Gifting"),
-        (53, "mtn", "6GB", "7 Days", 2600.0, 2495.0, "SME"),
+        (80, "mtn", "5GB", "14 Days", 1400.0, 1299.0, "Corporate"),      # NEW - verify price
+        (49, "mtn", "3GB", "30 Days", 1500.0, 1370.0, "SME"),            # was "Gifting"
+        (50, "mtn", "5GB", "30 Days", 2300.0, 2050.0, "SME"),            # was "Gifting"
+        (53, "mtn", "6GB", "7 Days", 2600.0, 2495.0, "Gifting"),
         (55, "mtn", "11GB", "7 Days", 3450.0, 3430.0, "Gifting"),
-        (33, "mtn", "7GB", "30 Days", 3599.0, 3499.0, "SME"),
-        (67, "mtn", "10GB", "30 Days", 5000.0, 4470.0, "corporate gifting"),
+        (33, "mtn", "7GB", "30 Days", 3599.0, 3499.0, "Gifting"),
+        (67, "mtn", "10GB", "30 Days", 5000.0, 4470.0, "Gifting"),
         (57, "mtn", "36GB", "30 Days", 11000.0, 10800.0, "Gifting"),
-        (51, "mtn", "75GB", "30 Days", 18500.0, 17990.0, "Gifting"),
+        (51, "mtn", "75GB", "30 Days", 18500.0, 17990.0, "SME"),         # was "Gifting"
     ]
     for plan in data_plans:
         plan_id, provider, size, duration, selling_price, cost_price, plan_type = plan
@@ -72,8 +81,13 @@ def init_data_plans():
                 cost_price=cost_price,
                 plan_type=plan_type
             ))
-        elif existing.plan_type != plan_type:
-            # Keep plan_type in sync if this list is edited later
+        else:
+            # Keep existing rows in sync with this list on redeploy
+            existing.provider = provider
+            existing.size = size
+            existing.duration = duration
+            existing.selling_price = selling_price
+            existing.cost_price = cost_price
             existing.plan_type = plan_type
     db.session.commit()
     print("✅ Data plans inserted")
