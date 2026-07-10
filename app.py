@@ -67,6 +67,13 @@ def create_app():
     else:
         logger.warning('vtpass blueprint not found — VTU routes unavailable')
 
+    try:
+        from routes import a2c_bp
+        app.register_blueprint(a2c_bp)
+        logger.info('airtime-to-cash blueprint loaded')
+    except ImportError:
+        logger.warning('airtime_to_cash.py not found — skipping')
+
     # ── Debug routes ────────────────────────────────────────────────
     def _to_intl(phone):
         phone = str(phone).strip().replace(' ', '').replace('-', '')
