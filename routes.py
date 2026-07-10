@@ -280,3 +280,100 @@ def get_transactions():
         'status': 'success',
         'data': [t.to_dict() for t in txns]
     }), 200
+
+
+# ─── AIRTIME TO CASH ──────────────────────────────────────────────────────────
+# See airtime_to_cash.py for the actual AirtimeToCash API integration.
+# All 4 steps require login (JWT) so random people can't burn your
+# AirtimeToCash quota for free.
+
+from airtime_to_cash import generate_otp, verify_otp, check_quota, transfer_airtime
+
+a2c_bp = Blueprint('airtime_to_cash', __name__, url_prefix='/api/airtime-to-cash')
+
+
+@a2c_bp.route('/generate-otp', methods=['POST'])
+@jwt_required()
+def a2c_generate_otp():
+    """
+    POST /api/airtime-to-cash/generate-otp
+    Body: { network, phone }
+    Sends an OTP to the phone number the user wants to convert airtime from.
+    """
+    user, err = _get_user()
+    if err:
+        return err
+
+    data = request.get_json() or {}
+    result = generate_otp(data.get('network'), data.get('phone'))
+    status_code = 200 if result.get('status') == 'success' else 400
+    return jsonify(result), status_code
+
+
+@a2c_bp.route('/verify-otp', methods=['POST'])
+@jwt_required()
+def a2c_verify_otp():
+    """
+    POST /api/airtime-to-cash/verify-otp
+    Body: { network, phone, otp }
+    Returns a session_id (needed for the transfer step) plus the SIM's
+    current airtime balance, once the OTP is confirmed.
+    """
+    user, err = _get_user()
+    if err:
+        return err
+
+    data = request.get_json() or {}
+    result = verify_otp(data.get('network'), data.get('phone'), data.get('otp'))
+    status_code = 200 if result.get('status') == 'success' else 400
+    return jsonify(result), status_code
+
+
+@a2c_bp.route('/check-quota', methods=['POST'])
+@jwt_required()
+def a2c_check_quota():
+    """
+    POST /api/airtime-to-cash/check-quota
+    Body: { network, amount }
+    Checks whether AirtimeToCash can accept this conversion right now,
+    before asking the user for their SIM transfer PIN.
+    """
+    user, err = _get_user()
+    if err:
+        return err
+
+    data = request.get_json() or {}
+    result = check_quota(data.get('network'), data.get('amount'))
+    status_code = 200 if result.get('status') == 'success' else 400
+    return jsonify(result), status_code
+
+
+@a2c_bp.route('/transfer', methods=['POST'])
+@jwt_required()
+def a2c_transfer():
+    """
+    POST /api/airtime-to-cash/transfer
+    Body: { network, phone, amount, sim_pin, session_id }
+    Executes the conversion. On success, credits the user's Cheap4U wallet
+    with (100 - profit_margin)% of the confirmed converted amount.
+
+    Note: sim_pin here is the user's OWN phone network's airtime-transfer
+    PIN (e.g. the PIN behind their carrier's airtime-transfer USSD code) -
+    it is NOT the user's Cheap4U transaction PIN, so we do not check
+    _verify_pin() here; the SIM PIN itself is what AirtimeToCash validates.
+    """
+    user, err = _get_user()
+    if err:
+        return err
+
+    data = request.get_json() or {}
+    result = transfer_airtime(
+        user,
+        data.get('network'),
+        data.get('phone'),
+        data.get('amount'),
+        data.get('sim_pin'),
+        data.get('session_id'),
+    )
+    status_code = 200 if result.get('status') == 'success' else 400
+    return jsonify(result), status_code
