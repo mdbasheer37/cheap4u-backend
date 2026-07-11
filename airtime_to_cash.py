@@ -125,7 +125,10 @@ def generate_otp(network, phone):
         return err
 
     payload = {"networkName": network, "sender": _to_intl(phone)}
-    result = _request("/api/v1/generate/otp", payload, with_auth=False)
+    # NOTE: AirtimeToCash's docs say this endpoint doesn't need a Bearer
+    # token, but the live API actually rejects unauthenticated requests
+    # with "Unauthenticated." - sending the token anyway fixes it.
+    result = _request("/api/v1/generate/otp", payload, with_auth=True)
 
     if _is_success(result):
         return {"status": "success", "message": result.get("message", "OTP sent successfully")}
@@ -144,7 +147,8 @@ def verify_otp(network, phone, otp):
         return {"status": "error", "message": "Invalid OTP"}
 
     payload = {"networkName": network, "sender": _to_intl(phone), "otp": otp}
-    result = _request("/api/v1/verify/otp", payload, with_auth=False)
+    # Same fix as generate_otp - live API needs the Bearer token here too
+    result = _request("/api/v1/verify/otp", payload, with_auth=True)
 
     if _is_success(result):
         data = result.get("data", {})
