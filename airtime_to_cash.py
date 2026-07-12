@@ -184,12 +184,18 @@ def check_quota(network, amount):
     payload = {"networkName": network, "amount": int(amount)}
     result = _request("/api/v1/check/quota/availability", payload, with_auth=True)
 
-    # NOTE: per AirtimeToCash's own docs, their *success* example for this
-    # endpoint actually returns code 5030 ("Recipient(s) Available") rather
-    # than 2000 - handle both as "available".
-    if result.get("code") in (2000, 5030):
-        return {"status": "success", "message": result.get("message", "Recipient(s) available")}
-    return {"status": "error", "message": result.get("message", "No recipients available right now - try again shortly")}
+    # NOTE: AirtimeToCash reuses code 5030 for BOTH "Recipient(s) Available"
+    # (success) AND "No available recipient..." (failure) - confirmed by
+    # comparing their docs' quota-check example against the actual transfer
+    # endpoint's failure response, which also uses 5030. Code alone can't
+    # tell success from failure here, so check the message text too.
+    message = str(result.get("message", ""))
+    message_lower = message.lower()
+    unavailable = "no available" in message_lower or "no recipient" in message_lower
+
+    if not unavailable and result.get("code") in (2000, 5030):
+        return {"status": "success", "message": message or "Recipient(s) available"}
+    return {"status": "error", "message": message or "No recipients available right now - try again shortly"}
 
 
 def transfer_airtime(user, network, phone, amount, sim_pin, session_id):
