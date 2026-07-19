@@ -15,6 +15,7 @@ import requests
 import logging
 from datetime import datetime
 from models import db, User, Transaction, Profit, DataPlan, CablePlan, ReferralTransaction
+from challenge import record_purchase
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -158,6 +159,7 @@ def buy_airtime(network, phone, amount, user_email):
             category="airtime", amount=profit_amount
         ))
         _award_referral_commission(user, selling_price)
+        record_purchase(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -227,6 +229,7 @@ def buy_data(plan_id, phone, user_email):
             category="data", amount=profit_amount
         ))
         _award_referral_commission(user, selling_price)
+        record_purchase(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -321,6 +324,7 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
             category="electricity", amount=profit_amount
         ))
         _award_referral_commission(user, selling_price)
+        record_purchase(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -394,6 +398,7 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone=""):
             category="cable_tv", amount=profit_amount
         ))
         _award_referral_commission(user, selling_price)
+        record_purchase(transaction)
         db.session.commit()
         return {
             "status":  "success",
