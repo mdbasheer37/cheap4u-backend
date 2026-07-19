@@ -36,6 +36,15 @@ def create_app():
     app.register_blueprint(admin_bp)
     app.register_blueprint(plans_bp)
 
+    # Monthly Champion Challenge
+    try:
+        from challenge_routes import challenge_bp, challenge_admin_bp
+        app.register_blueprint(challenge_bp)
+        app.register_blueprint(challenge_admin_bp)
+        logger.info('Monthly Champion Challenge blueprints loaded')
+    except Exception as e:
+        logger.warning(f'challenge_routes.py not loaded — challenge feature disabled: {e}')
+
     try:
         from referral import referral_bp
         app.register_blueprint(referral_bp)
@@ -299,6 +308,12 @@ def create_app():
                     logger.warning(f'init_plans error (non-fatal): {e}')
                 app._tables_created = True
                 logger.info('✅ DB tables ready')
+
+                try:
+                    from challenge import start_scheduler
+                    start_scheduler(app)
+                except Exception as e:
+                    logger.warning(f'Challenge scheduler not started (non-fatal): {e}')
             except Exception as e:
                 logger.error(f'DB init error: {e}')
 
