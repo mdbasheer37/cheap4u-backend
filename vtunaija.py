@@ -11,6 +11,7 @@ import requests
 import logging
 from datetime import datetime
 from models import db, User, Transaction, Profit
+from challenge import record_purchase
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -140,6 +141,7 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None):
             transaction_id=transaction.id, user_id=user.id,
             category="exam_pin", amount=profit_amount,
         ))
+        record_purchase(transaction)
         db.session.commit()
 
         logger.info(f"[ExamPIN] SUCCESS {reference} | profit=₦{profit_amount}")

@@ -10,3 +10,4 @@ paystackapi==1.2.1
 gunicorn==21.2.0
 #psycopg[binary]
 psycopg2-binary==2.9.11
+APScheduler==3.10.4
