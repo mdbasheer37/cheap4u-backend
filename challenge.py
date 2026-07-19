@@ -103,13 +103,13 @@ def _maybe_notify_rank_change(entry, old_rank, new_rank):
         return
 
     if new_rank == 1 and entry.last_notified_rank != 1:
-        _notify(entry.user_id, 'first_place', "🥇 You're #1!",
+        _notify(entry.user_id, 'first_place', "You're #1!",
                 "You're now leading the Monthly Champion Challenge! Stay on top to win 50% cashback on your total spend.")
     elif new_rank <= 3 and (old_rank is None or old_rank > 3):
-        _notify(entry.user_id, 'top3', "🥉 You made Top 3!",
+        _notify(entry.user_id, 'top3', "You made Top 3!",
                 f"You've entered the Top 3 of the Monthly Champion Challenge at Rank #{new_rank}.")
     elif new_rank <= 10 and (old_rank is None or old_rank > 10):
-        _notify(entry.user_id, 'top10', "🏆 You're in the Top 10!",
+        _notify(entry.user_id, 'top10', "You're in the Top 10!",
                 f"You've entered the Top 10 of the Monthly Champion Challenge at Rank #{new_rank}.")
 
     if new_rank < (entry.last_notified_rank or 999999):
@@ -178,7 +178,7 @@ def get_leaderboard(month=None, limit=100):
         return [], month
 
     leader_total = ordered[0].total_amount or 0.0
-    reward_labels = {1: '🥇 1st Place', 2: '🥈 2nd Place', 3: '🥉 3rd Place'}
+    reward_labels = {1: '1st Place', 2: '2nd Place', 3: '3rd Place'}
 
     board = []
     for idx, e in enumerate(ordered[:limit], start=1):
@@ -213,7 +213,7 @@ def get_user_summary(user_id, month=None):
     elif rank == 1:
         amount_to_overtake_next = 0.0
 
-    reward_labels = {1: '🥇 1st Place', 2: '🥈 2nd Place', 3: '🥉 3rd Place'}
+    reward_labels = {1: '1st Place', 2: '2nd Place', 3: '3rd Place'}
     cfg = get_config()
 
     return {
@@ -277,7 +277,7 @@ def _credit_reward(user, winner_row, reward_amount):
     winner_row.credited_at = datetime.utcnow()
 
     _notify(
-        user.id, 'reward_credited', '💰 Reward Credited!',
+        user.id, 'reward_credited', 'Reward Credited!',
         f"₦{reward_amount:,.2f} has been credited to your wallet for finishing "
         f"Rank #{winner_row.rank} in the {winner_row.month} Monthly Champion Challenge!",
     )
@@ -309,7 +309,7 @@ def process_month_end(month_key=None, force=False):
     # still get closure on a challenge they participated in).
     for idx, entry in enumerate(ordered[:10], start=1):
         _notify(
-            entry.user_id, 'challenge_ended', '🏁 Monthly Challenge Ended',
+            entry.user_id, 'challenge_ended', 'Monthly Challenge Ended',
             f"The {month_key} Monthly Champion Challenge has ended. "
             f"You finished Rank #{idx} with ₦{entry.total_amount:,.2f} in purchases.",
         )
