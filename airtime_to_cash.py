@@ -29,6 +29,7 @@ import logging
 import requests
 from datetime import datetime
 from models import db, User, Transaction, Profit
+from challenge import record_purchase
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -272,6 +273,7 @@ def transfer_airtime(user, network, phone, amount, sim_pin, session_id):
             transaction_id=transaction.id, user_id=user.id,
             category="airtime_to_cash", amount=profit_amount
         ))
+        record_purchase(transaction)
         db.session.commit()
 
         return {
