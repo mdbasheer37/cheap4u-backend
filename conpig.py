@@ -59,6 +59,15 @@ class Config:
     BACKEND_URL = os.getenv('BACKEND_URL',
                   'https://cheap4u-backend.onrender.com')
 
+    # ── Support Center — AI Chat Assistant ───────────────────────────
+    # NEVER expose this key to the mobile app — it is only read here,
+    # server-side, by ai_chat.py.
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+    OPENAI_MODEL   = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+
+    SUPPORT_PHONE  = os.getenv('SUPPORT_PHONE', '+2349037663816')
+    SUPPORT_EMAIL  = os.getenv('SUPPORT_EMAIL', 'support@cheap4utechnology.com')
+
     PROFIT_MARGIN_AIRTIME     = float(os.getenv('PROFIT_MARGIN_AIRTIME', '5'))
     PROFIT_MARGIN_ELECTRICITY = float(os.getenv('PROFIT_MARGIN_ELECTRICITY', '5'))
     PROFIT_MARGIN_EXAM_PIN    = float(os.getenv('PROFIT_MARGIN_EXAM_PIN', '10'))

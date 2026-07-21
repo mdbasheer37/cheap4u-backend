@@ -199,3 +199,32 @@ class ElectricityProvider(db.Model):
     name             = db.Column(db.String(100), nullable=False)
     discount_percent = db.Column(db.Float, default=0.0)
     created_at       = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# SUPPORT CENTER — AI Chat Assistant
+# Added to support the in-app "Support Center" feature (replaces the
+# old WhatsApp redirect button). Stores every chat turn so users see
+# their chat history when they reopen the AI Assistant, and so support
+# staff can audit conversations if a user has to be escalated to a
+# human agent (phone / email).
+# ─────────────────────────────────────────────────────────────────────
+class SupportChatMessage(db.Model):
+    __tablename__ = 'support_chat_messages'
+
+    id         = db.Column(db.Integer, primary_key=True)
+    # nullable — the AI assistant also works for guests who aren't logged in yet
+    user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True, index=True)
+    # groups messages from the same device/app-session when user_id is None
+    session_id = db.Column(db.String(64), nullable=False, index=True)
+    role       = db.Column(db.String(20), nullable=False)   # 'user' | 'assistant'
+    content    = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self):
+        return {
+            'id':         self.id,
+            'role':       self.role,
+            'content':    self.content,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }

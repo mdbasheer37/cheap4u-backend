@@ -25,6 +25,11 @@ def create_app():
     db.init_app(app)
     JWTManager(app)
 
+    # Rate limiter (shared with ai_chat.py via extensions.py to avoid
+    # circular imports)
+    from extensions import limiter
+    limiter.init_app(app)
+
     # ── Register blueprints ──────────────────────────────────────────
     from auth import auth_bp
     from payment import payment_bp
@@ -35,6 +40,14 @@ def create_app():
     app.register_blueprint(payment_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(plans_bp)
+
+    # Support Center — AI Chat Assistant
+    try:
+        from ai_chat import ai_chat_bp
+        app.register_blueprint(ai_chat_bp)
+        logger.info('AI chat support blueprint loaded')
+    except Exception as e:
+        logger.warning(f'ai_chat.py not loaded — AI assistant disabled: {e}')
 
     # Monthly Champion Challenge
     try:
