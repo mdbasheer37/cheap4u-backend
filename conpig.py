@@ -62,8 +62,8 @@ class Config:
     # ── Support Center — AI Chat Assistant ───────────────────────────
     # NEVER expose this key to the mobile app — it is only read here,
     # server-side, by ai_chat.py.
-    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
-    OPENAI_MODEL   = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+    GEMINI_MODEL   = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 
     SUPPORT_PHONE  = os.getenv('SUPPORT_PHONE', '+2349037663816')
     SUPPORT_EMAIL  = os.getenv('SUPPORT_EMAIL', 'support@cheap4utechnology.com')

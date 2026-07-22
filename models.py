@@ -213,12 +213,18 @@ class SupportChatMessage(db.Model):
     __tablename__ = 'support_chat_messages'
 
     id         = db.Column(db.Integer, primary_key=True)
-    # nullable — the AI assistant also works for guests who aren't logged in yet
+    # nullable — kept nullable for backward compatibility with any old
+    # guest rows; the AI Assistant now requires login (JWT), so new
+    # rows always have a user_id.
     user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True, index=True)
-    # groups messages from the same device/app-session when user_id is None
+    # groups messages into one conversation (one per logged-in user)
     session_id = db.Column(db.String(64), nullable=False, index=True)
     role       = db.Column(db.String(20), nullable=False)   # 'user' | 'assistant'
     content    = db.Column(db.Text, nullable=False)
+    # smart-action code detected in a user message (e.g. 'data_purchase'),
+    # stored on the assistant's reply row so the app can re-offer the
+    # shortcut button even when history is reloaded later
+    action     = db.Column(db.String(40), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
     def to_dict(self):
@@ -226,5 +232,27 @@ class SupportChatMessage(db.Model):
             'id':         self.id,
             'role':       self.role,
             'content':    self.content,
+            'action':     self.action,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class ChatFeedback(db.Model):
+    """Thumbs up/down on an AI Assistant reply, submitted via POST /api/chat/feedback."""
+    __tablename__ = 'chat_feedback'
+
+    id         = db.Column(db.Integer, primary_key=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    message_id = db.Column(db.Integer, db.ForeignKey('support_chat_messages.id'), nullable=False, index=True)
+    rating     = db.Column(db.String(10), nullable=False)   # 'up' | 'down'
+    comment    = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id':         self.id,
+            'message_id': self.message_id,
+            'rating':     self.rating,
+            'comment':    self.comment,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
