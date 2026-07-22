@@ -140,11 +140,15 @@ def _get_gemini_client():
     api_key = current_app.config.get('GEMINI_API_KEY')
     if not api_key:
         return None
-    from google import genai
-    # Recommended server-side pattern: create a client using the key
-    # from an environment variable — never hardcoded, never sent to
-    # any client.
-    return genai.Client(api_key=api_key)
+    try:
+        from google import genai
+        # Recommended server-side pattern: create a client using the key
+        # from an environment variable — never hardcoded, never sent to
+        # any client.
+        return genai.Client(api_key=api_key)
+    except Exception as e:
+        logger.error(f'Could not create Gemini client (is google-genai installed?): {e}')
+        return None
 
 
 def _build_contents(history, new_message):
@@ -213,33 +217,40 @@ def send_message():
     is_first_turn = len(history) == 0
 
     client = _get_gemini_client()
+    model = current_app.config.get('GEMINI_MODEL', 'gemini-2.5-flash')
+
+    # Cache hit — only for a fresh conversation, to avoid replaying a
+    # stale answer to a message that actually depends on prior context.
+    cached = _cache_get(cache_key) if is_first_turn else None
+
+    # IMPORTANT: every code path below must respect want_stream. If the
+    # client requested an SSE stream, it will only ever understand
+    # "data: ...\n\n" formatted lines — returning a plain JSON body here
+    # (e.g. for the "no API key configured" or "cached reply" cases)
+    # would silently be dropped by the streaming reader on the app side,
+    # leaving the chat bubble empty. So ALL branches route through
+    # _stream_reply when streaming was requested.
+    if want_stream:
+        return _stream_reply(client, model, history, message, action, is_first_turn,
+                              cache_key, cached, user_id, session_id,
+                              support_phone, support_email)
+
     if client is None:
         logger.error('GEMINI_API_KEY not configured')
         reply = _fallback_message(support_phone, support_email)
         _save_turn(user_id, session_id, message, reply, action)
         return jsonify({'status': 'error', 'message': reply}), 503
 
-    model = current_app.config.get('GEMINI_MODEL', 'gemini-2.5-flash')
-
-    # Cache hit — only for a fresh conversation, to avoid replaying a
-    # stale answer to a message that actually depends on prior context.
-    if is_first_turn:
-        cached = _cache_get(cache_key)
-        if cached:
-            saved = _save_turn(user_id, session_id, message, cached, action)
-            return jsonify({
-                'status': 'success', 'reply': cached, 'action': action,
-                'session_id': session_id, 'message_id': saved.id, 'cached': True,
-            })
+    if cached:
+        saved = _save_turn(user_id, session_id, message, cached, action)
+        return jsonify({
+            'status': 'success', 'reply': cached, 'action': action,
+            'session_id': session_id, 'message_id': saved.id, 'cached': True,
+        })
 
     from google.genai import types
     config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, temperature=0.6, max_output_tokens=500)
     contents = _build_contents(history, message)
-
-    if want_stream:
-        return _stream_reply(client, model, config, contents, user_id, session_id,
-                              message, action, is_first_turn, cache_key,
-                              support_phone, support_email)
 
     try:
         response = _call_gemini_with_retry(client, model, contents, config)
@@ -258,11 +269,38 @@ def send_message():
     })
 
 
-def _stream_reply(client, model, config, contents, user_id, session_id,
-                   message, action, is_first_turn, cache_key, support_phone, support_email):
-    """Server-Sent Events stream: yields text deltas as Gemini generates them."""
+def _stream_reply(client, model, history, message, action, is_first_turn, cache_key,
+                   cached, user_id, session_id, support_phone, support_email):
+    """
+    Server-Sent Events stream: yields text deltas as Gemini generates
+    them. Handles every case (missing API key, cached answer, real
+    Gemini call, mid-stream error) by always yielding at least one
+    "data: ..." chunk and a final done=true chunk — never a bare JSON
+    body — so the app's SSE reader always has something to render.
+    """
 
     def generate():
+        # Case 1: Gemini isn't configured at all.
+        if client is None:
+            logger.error('GEMINI_API_KEY not configured')
+            reply = _fallback_message(support_phone, support_email)
+            saved = _save_turn(user_id, session_id, message, reply, action)
+            yield f"data: {jsonify({'delta': reply, 'done': False}).get_data(as_text=True)}\n\n"
+            yield f"data: {jsonify({'delta': '', 'done': True, 'action': action, 'session_id': session_id, 'message_id': saved.id}).get_data(as_text=True)}\n\n"
+            return
+
+        # Case 2: a cached answer to this exact first-turn question.
+        if cached:
+            saved = _save_turn(user_id, session_id, message, cached, action)
+            yield f"data: {jsonify({'delta': cached, 'done': False}).get_data(as_text=True)}\n\n"
+            yield f"data: {jsonify({'delta': '', 'done': True, 'action': action, 'session_id': session_id, 'message_id': saved.id, 'cached': True}).get_data(as_text=True)}\n\n"
+            return
+
+        # Case 3: real Gemini call, streamed token-by-token.
+        from google.genai import types
+        config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, temperature=0.6, max_output_tokens=500)
+        contents = _build_contents(history, message)
+
         full_text = ''
         try:
             for chunk in client.models.generate_content_stream(model=model, contents=contents, config=config):
