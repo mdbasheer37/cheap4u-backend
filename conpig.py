@@ -63,7 +63,7 @@ class Config:
     # NEVER expose this key to the mobile app — it is only read here,
     # server-side, by ai_chat.py.
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-    GEMINI_MODEL   = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+    GEMINI_MODEL   = os.getenv('GEMINI_MODEL', 'gemini-flash-latest')
 
     SUPPORT_PHONE  = os.getenv('SUPPORT_PHONE', '+2349037663816')
     SUPPORT_EMAIL  = os.getenv('SUPPORT_EMAIL', 'support@cheap4utechnology.com')

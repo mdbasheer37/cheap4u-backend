@@ -161,15 +161,33 @@ def _build_contents(history, new_message):
     return contents
 
 
+# If the configured/env-set model ever gets deprecated (Google retires
+# specific dated model IDs periodically - this is exactly what happened
+# with gemini-2.5-flash), fall back to this auto-updating alias, which
+# Google guarantees always points to a current, supported Flash model.
+FALLBACK_MODEL = 'gemini-flash-latest'
+
+
+def _is_model_not_found_error(e):
+    msg = str(e)
+    return 'NOT_FOUND' in msg or '404' in msg
+
+
 def _call_gemini_with_retry(client, model, contents, config):
-    """Simple retry with backoff for transient Gemini errors (network blips, 5xx, rate limits)."""
+    """Retry with backoff for transient Gemini errors, and auto-fallback
+    to FALLBACK_MODEL if the configured model itself is invalid/deprecated
+    (a 404 NOT_FOUND won't be fixed by retrying the same model)."""
     last_err = None
     for attempt in range(GEMINI_MAX_RETRIES + 1):
         try:
             return client.models.generate_content(model=model, contents=contents, config=config)
         except Exception as e:
             last_err = e
-            logger.warning(f"Gemini call failed (attempt {attempt + 1}/{GEMINI_MAX_RETRIES + 1}): {e}")
+            logger.warning(f"Gemini call failed (attempt {attempt + 1}/{GEMINI_MAX_RETRIES + 1}, model={model}): {e}")
+            if _is_model_not_found_error(e) and model != FALLBACK_MODEL:
+                logger.warning(f"Model '{model}' unavailable - retrying with fallback '{FALLBACK_MODEL}'")
+                model = FALLBACK_MODEL
+                continue
             if attempt < GEMINI_MAX_RETRIES:
                 time.sleep(1.5 * (attempt + 1))
     raise last_err
@@ -217,7 +235,7 @@ def send_message():
     is_first_turn = len(history) == 0
 
     client = _get_gemini_client()
-    model = current_app.config.get('GEMINI_MODEL', 'gemini-2.5-flash')
+    model = current_app.config.get('GEMINI_MODEL', 'gemini-flash-latest')
 
     # Cache hit — only for a fresh conversation, to avoid replaying a
     # stale answer to a message that actually depends on prior context.
@@ -302,17 +320,28 @@ def _stream_reply(client, model, history, message, action, is_first_turn, cache_
         contents = _build_contents(history, message)
 
         full_text = ''
-        try:
-            for chunk in client.models.generate_content_stream(model=model, contents=contents, config=config):
-                delta = getattr(chunk, 'text', '') or ''
-                if delta:
-                    full_text += delta
-                    yield f"data: {jsonify({'delta': delta, 'done': False}).get_data(as_text=True)}\n\n"
-        except Exception as e:
-            logger.error(f'Gemini streaming error: {e}')
-            if not full_text:
-                full_text = _fallback_message(support_phone, support_email)
-                yield f"data: {jsonify({'delta': full_text, 'done': False}).get_data(as_text=True)}\n\n"
+        active_model = model
+        tried_fallback = False
+        while True:
+            try:
+                for chunk in client.models.generate_content_stream(model=active_model, contents=contents, config=config):
+                    delta = getattr(chunk, 'text', '') or ''
+                    if delta:
+                        full_text += delta
+                        yield f"data: {jsonify({'delta': delta, 'done': False}).get_data(as_text=True)}\n\n"
+                break
+            except Exception as e:
+                logger.error(f'Gemini streaming error (model={active_model}): {e}')
+                if (_is_model_not_found_error(e) and not tried_fallback
+                        and active_model != FALLBACK_MODEL and not full_text):
+                    logger.warning(f"Model '{active_model}' unavailable - retrying stream with fallback '{FALLBACK_MODEL}'")
+                    active_model = FALLBACK_MODEL
+                    tried_fallback = True
+                    continue
+                if not full_text:
+                    full_text = _fallback_message(support_phone, support_email)
+                    yield f"data: {jsonify({'delta': full_text, 'done': False}).get_data(as_text=True)}\n\n"
+                break
 
         reply = full_text.strip() or _fallback_message(support_phone, support_email)
         saved = _save_turn(user_id, session_id, message, reply, action)
