@@ -314,6 +314,24 @@ def create_app():
         if not getattr(app, '_tables_created', False):
             try:
                 db.create_all()
+                # db.create_all() only creates tables that don't exist yet —
+                # it does NOT add new columns to a table that was already
+                # created before the column existed in the model (e.g.
+                # support_chat_messages.action, added when the AI Assistant
+                # feature was upgraded). Patch those in directly so an
+                # older, already-deployed database self-heals on the next
+                # request instead of every /api/chat call failing with
+                # "column ... does not exist".
+                try:
+                    with db.engine.connect() as conn:
+                        conn.execute(db.text(
+                            "ALTER TABLE support_chat_messages "
+                            "ADD COLUMN IF NOT EXISTS action VARCHAR(40)"
+                        ))
+                        conn.commit()
+                    logger.info('✅ Verified support_chat_messages.action column')
+                except Exception as e:
+                    logger.warning(f'Column migration check failed (non-fatal): {e}')
                 try:
                     from init_plans import init_all
                     init_all()
