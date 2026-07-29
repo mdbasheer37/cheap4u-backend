@@ -256,3 +256,39 @@ class ChatFeedback(db.Model):
             'comment':    self.comment,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# GOOGLE PLAY — Delete Account requirement
+# Stores requests submitted from the public /delete-account web page.
+# Not linked to the User table by foreign key on purpose — the person
+# submitting may not be logged in / may have forgotten their exact
+# account email, so this is a support queue admins process manually,
+# the same way the page tells the user to expect ("contact us").
+# ─────────────────────────────────────────────────────────────────────
+class AccountDeletionRequest(db.Model):
+    __tablename__ = 'account_deletion_requests'
+
+    id         = db.Column(db.Integer, primary_key=True)
+    full_name  = db.Column(db.String(100), nullable=False)
+    email      = db.Column(db.String(100), nullable=False, index=True)
+    phone      = db.Column(db.String(20), nullable=False)
+    reason     = db.Column(db.Text, nullable=True)
+    # 'pending' | 'processing' | 'completed' | 'rejected'
+    status     = db.Column(db.String(20), default='pending', nullable=False)
+    ip_address = db.Column(db.String(100), nullable=True)
+    user_agent = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    processed_at = db.Column(db.DateTime, nullable=True)
+
+    def to_dict(self):
+        return {
+            'id':           self.id,
+            'full_name':    self.full_name,
+            'email':        self.email,
+            'phone':        self.phone,
+            'reason':       self.reason,
+            'status':       self.status,
+            'created_at':   self.created_at.isoformat() if self.created_at else None,
+            'processed_at': self.processed_at.isoformat() if self.processed_at else None,
+        }

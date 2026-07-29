@@ -64,6 +64,12 @@ def create_app():
     except ImportError:
         logger.warning('referral.py not found — skipping')
 
+    # Public web pages — Delete Account (Google Play requirement),
+    # Privacy Policy, Terms of Service
+    from public_pages import public_pages_bp
+    app.register_blueprint(public_pages_bp)
+    logger.info('Public pages blueprint loaded (/delete-account, /privacy-policy, /terms-of-service)')
+
     # vtpass / routes blueprint
     vtpass_bp = None
     for mod_name in ('vtpass', 'routes'):

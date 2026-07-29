@@ -66,7 +66,7 @@ class Config:
     GEMINI_MODEL   = os.getenv('GEMINI_MODEL', 'gemini-flash-latest')
 
     SUPPORT_PHONE  = os.getenv('SUPPORT_PHONE', '+2349037663816')
-    SUPPORT_EMAIL  = os.getenv('SUPPORT_EMAIL', 'support@cheap4utechnology.com')
+    SUPPORT_EMAIL  = os.getenv('SUPPORT_EMAIL', 'supportcheap4u@gmail.com')
 
     PROFIT_MARGIN_AIRTIME     = float(os.getenv('PROFIT_MARGIN_AIRTIME', '5'))
     PROFIT_MARGIN_ELECTRICITY = float(os.getenv('PROFIT_MARGIN_ELECTRICITY', '5'))
