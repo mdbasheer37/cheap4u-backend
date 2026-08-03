@@ -64,6 +64,33 @@ def create_app():
     except ImportError:
         logger.warning('referral.py not found — skipping')
 
+    # Cashback System
+    try:
+        from cashback_routes import cashback_bp, cashback_admin_bp
+        app.register_blueprint(cashback_bp)
+        app.register_blueprint(cashback_admin_bp)
+        logger.info('Cashback System blueprints loaded')
+    except Exception as e:
+        logger.warning(f'cashback_routes.py not loaded — cashback feature disabled: {e}')
+
+    # Spin & Win
+    try:
+        from spin_routes import spin_bp, spin_admin_bp
+        app.register_blueprint(spin_bp)
+        app.register_blueprint(spin_admin_bp)
+        logger.info('Spin & Win blueprints loaded')
+    except Exception as e:
+        logger.warning(f'spin_routes.py not loaded — spin feature disabled: {e}')
+
+    # Coupon System
+    try:
+        from coupon_routes import coupon_bp, coupon_admin_bp
+        app.register_blueprint(coupon_bp)
+        app.register_blueprint(coupon_admin_bp)
+        logger.info('Coupon System blueprints loaded')
+    except Exception as e:
+        logger.warning(f'coupon_routes.py not loaded — coupon feature disabled: {e}')
+
     # Public web pages — Delete Account (Google Play requirement),
     # Privacy Policy, Terms of Service
     from public_pages import public_pages_bp
@@ -351,6 +378,12 @@ def create_app():
                     start_scheduler(app)
                 except Exception as e:
                     logger.warning(f'Challenge scheduler not started (non-fatal): {e}')
+
+                try:
+                    from cashback import start_scheduler as start_cashback_scheduler
+                    start_cashback_scheduler(app)
+                except Exception as e:
+                    logger.warning(f'Cashback scheduler not started (non-fatal): {e}')
             except Exception as e:
                 logger.error(f'DB init error: {e}')
 

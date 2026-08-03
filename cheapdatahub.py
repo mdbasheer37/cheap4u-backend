@@ -16,6 +16,8 @@ import logging
 from datetime import datetime
 from models import db, User, Transaction, Profit, DataPlan, CablePlan, ReferralTransaction
 from challenge import record_purchase
+from cashback import award_cashback
+import coupon as coupon_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -108,7 +110,7 @@ def _award_referral_commission(user, selling_price):
 
 
 # ── AIRTIME ────────────────────────────────────────────────────────────────────
-def buy_airtime(network, phone, amount, user_email):
+def buy_airtime(network, phone, amount, user_email, coupon_code=None):
     if not phone or len(str(phone)) != 11 or not str(phone).isdigit():
         return {"status": "error", "message": "Invalid phone number. Must be 11 digits."}
     if amount <= 0:
@@ -125,16 +127,25 @@ def buy_airtime(network, phone, amount, user_email):
         return {"status": "error", "message": "User not found"}
 
     selling_price = float(amount)
-    if user.wallet_balance < selling_price:
+
+    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
+        user, coupon_code, "airtime", selling_price)
+    if coupon_error:
+        return {"status": "error", "message": coupon_error}
+    charge_amount = round(selling_price - (discount or 0), 2)
+
+    if user.wallet_balance < charge_amount:
         return {"status": "error",
                 "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
 
     reference = _make_reference("AIRTIME", user.id)
     transaction = Transaction(
         user_id=user.id, reference=reference, type="airtime",
-        service_type="airtime", amount=selling_price, profit=0.0,
+        service_type="airtime", amount=charge_amount, profit=0.0,
         status="pending",
-        details={"network": network, "phone": phone, "amount": amount}
+        details={"network": network, "phone": phone, "amount": amount,
+                 "selling_price": selling_price, "coupon_code": applied_coupon.code if applied_coupon else None,
+                 "discount_amount": discount or 0}
     )
     db.session.add(transaction)
     db.session.commit()
@@ -146,8 +157,8 @@ def buy_airtime(network, phone, amount, user_email):
     if _is_success(api_result):
         profit_percent = PROFIT_MARGINS["airtime"]
         cost_price     = selling_price / (1 + profit_percent / 100)
-        profit_amount  = round(selling_price - cost_price, 2)
-        user.wallet_balance = round(user.wallet_balance - selling_price, 2)
+        profit_amount  = round(charge_amount - cost_price, 2)
+        user.wallet_balance = round(user.wallet_balance - charge_amount, 2)
         transaction.status = "success"
         transaction.profit = profit_amount
         transaction.details.update({
@@ -158,8 +169,11 @@ def buy_airtime(network, phone, amount, user_email):
             transaction_id=transaction.id, user_id=user.id,
             category="airtime", amount=profit_amount
         ))
-        _award_referral_commission(user, selling_price)
+        _award_referral_commission(user, charge_amount)
+        if applied_coupon:
+            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="airtime")
         record_purchase(transaction)
+        award_cashback(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -169,6 +183,8 @@ def buy_airtime(network, phone, amount, user_email):
                 "api_reference":  api_result.get("reference"),
                 "profit_amount":  profit_amount,
                 "selling_price":  selling_price,
+                "discount_amount": discount or 0,
+                "amount_charged": charge_amount,
                 "new_balance":    round(user.wallet_balance, 2),  # FIX: added
             }
         }
@@ -183,7 +199,7 @@ def buy_airtime(network, phone, amount, user_email):
 
 
 # ── DATA ───────────────────────────────────────────────────────────────────────
-def buy_data(plan_id, phone, user_email):
+def buy_data(plan_id, phone, user_email, coupon_code=None):
     if not phone or len(str(phone)) != 11 or not str(phone).isdigit():
         return {"status": "error", "message": "Invalid phone number. Must be 11 digits."}
 
@@ -196,17 +212,26 @@ def buy_data(plan_id, phone, user_email):
         return {"status": "error", "message": "User not found"}
 
     selling_price = float(plan.selling_price)
-    if user.wallet_balance < selling_price:
+
+    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
+        user, coupon_code, "data", selling_price)
+    if coupon_error:
+        return {"status": "error", "message": coupon_error}
+    charge_amount = round(selling_price - (discount or 0), 2)
+
+    if user.wallet_balance < charge_amount:
         return {"status": "error",
                 "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
 
     reference = _make_reference("DATA", user.id)
     transaction = Transaction(
         user_id=user.id, reference=reference, type="data",
-        service_type="data", amount=selling_price, profit=0.0,
+        service_type="data", amount=charge_amount, profit=0.0,
         status="pending",
         details={"plan_id": plan_id, "phone": phone,
-                 "plan_name": plan.size, "provider": plan.provider}
+                 "plan_name": plan.size, "provider": plan.provider,
+                 "selling_price": selling_price, "coupon_code": applied_coupon.code if applied_coupon else None,
+                 "discount_amount": discount or 0}
     )
     db.session.add(transaction)
     db.session.commit()
@@ -216,8 +241,8 @@ def buy_data(plan_id, phone, user_email):
     api_result = cheapdatahub_request("data/purchase/", data=payload)
 
     if _is_success(api_result):
-        profit_amount = round(selling_price - float(plan.cost_price), 2)
-        user.wallet_balance = round(user.wallet_balance - selling_price, 2)
+        profit_amount = round(charge_amount - float(plan.cost_price), 2)
+        user.wallet_balance = round(user.wallet_balance - charge_amount, 2)
         transaction.status = "success"
         transaction.profit = profit_amount
         transaction.details.update({
@@ -228,8 +253,11 @@ def buy_data(plan_id, phone, user_email):
             transaction_id=transaction.id, user_id=user.id,
             category="data", amount=profit_amount
         ))
-        _award_referral_commission(user, selling_price)
+        _award_referral_commission(user, charge_amount)
+        if applied_coupon:
+            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="data")
         record_purchase(transaction)
+        award_cashback(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -239,6 +267,8 @@ def buy_data(plan_id, phone, user_email):
                 "api_reference": api_result.get("reference"),
                 "profit_amount": profit_amount,
                 "selling_price": selling_price,
+                "discount_amount": discount or 0,
+                "amount_charged": charge_amount,
                 "new_balance":   round(user.wallet_balance, 2),
             }
         }
@@ -251,7 +281,7 @@ def buy_data(plan_id, phone, user_email):
 
 
 # ── ELECTRICITY ────────────────────────────────────────────────────────────────
-def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
+def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email, coupon_code=None):
     if not phone or len(str(phone)) != 11 or not str(phone).isdigit():
         return {"status": "error", "message": "Invalid phone number. Must be 11 digits."}
     if amount <= 0:
@@ -274,18 +304,27 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
         return {"status": "error", "message": "User not found"}
 
     selling_price = float(amount)
-    if user.wallet_balance < selling_price:
+
+    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
+        user, coupon_code, "electricity", selling_price)
+    if coupon_error:
+        return {"status": "error", "message": coupon_error}
+    charge_amount = round(selling_price - (discount or 0), 2)
+
+    if user.wallet_balance < charge_amount:
         return {"status": "error",
                 "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
 
     reference = _make_reference("ELEC", user.id)
     transaction = Transaction(
         user_id=user.id, reference=reference, type="electricity",
-        service_type="electricity", amount=selling_price, profit=0.0,
+        service_type="electricity", amount=charge_amount, profit=0.0,
         status="pending",
         details={"disco": disco, "disco_id": disco_id,
                  "meter_number": meter_number,
-                 "meter_type": meter_type, "phone": phone}
+                 "meter_type": meter_type, "phone": phone,
+                 "selling_price": selling_price, "coupon_code": applied_coupon.code if applied_coupon else None,
+                 "discount_amount": discount or 0}
     )
     db.session.add(transaction)
     db.session.commit()
@@ -304,13 +343,13 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
     if _is_success(api_result):
         profit_percent = PROFIT_MARGINS["electricity"]
         cost_price     = selling_price / (1 + profit_percent / 100)
-        profit_amount  = round(selling_price - cost_price, 2)
+        profit_amount  = round(charge_amount - cost_price, 2)
 
         # FIX: token is nested inside data.token not top-level token
         token = (api_result.get("token")
                  or api_result.get("data", {}).get("token", ""))
 
-        user.wallet_balance = round(user.wallet_balance - selling_price, 2)
+        user.wallet_balance = round(user.wallet_balance - charge_amount, 2)
         transaction.status = "success"
         transaction.profit = profit_amount
         transaction.details.update({
@@ -323,8 +362,11 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
             transaction_id=transaction.id, user_id=user.id,
             category="electricity", amount=profit_amount
         ))
-        _award_referral_commission(user, selling_price)
+        _award_referral_commission(user, charge_amount)
+        if applied_coupon:
+            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="electricity")
         record_purchase(transaction)
+        award_cashback(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -335,6 +377,8 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
                 "units":         api_result.get("data", {}).get("units", ""),
                 "profit_amount": profit_amount,
                 "selling_price": selling_price,
+                "discount_amount": discount or 0,
+                "amount_charged": charge_amount,
                 "new_balance":   round(user.wallet_balance, 2),
             }
         }
@@ -347,7 +391,7 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
 
 
 # ── CABLE TV ───────────────────────────────────────────────────────────────────
-def buy_cable_tv(plan_id, smartcard, user_email, phone=""):
+def buy_cable_tv(plan_id, smartcard, user_email, phone="", coupon_code=None):
     if not smartcard or len(str(smartcard)) < 6:
         return {"status": "error", "message": "Invalid smartcard/IUC number"}
 
@@ -360,17 +404,26 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone=""):
         return {"status": "error", "message": "User not found"}
 
     selling_price = float(plan.selling_price)
-    if user.wallet_balance < selling_price:
+
+    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
+        user, coupon_code, "cable_tv", selling_price)
+    if coupon_error:
+        return {"status": "error", "message": coupon_error}
+    charge_amount = round(selling_price - (discount or 0), 2)
+
+    if user.wallet_balance < charge_amount:
         return {"status": "error",
                 "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
 
     reference = _make_reference("CABLE", user.id)
     transaction = Transaction(
         user_id=user.id, reference=reference, type="cable_tv",
-        service_type="cable_tv", amount=selling_price, profit=0.0,
+        service_type="cable_tv", amount=charge_amount, profit=0.0,
         status="pending",
         details={"plan_id": plan_id, "smartcard": smartcard,
-                 "provider": plan.provider, "plan_name": plan.plan_name}
+                 "provider": plan.provider, "plan_name": plan.plan_name,
+                 "selling_price": selling_price, "coupon_code": applied_coupon.code if applied_coupon else None,
+                 "discount_amount": discount or 0}
     )
     db.session.add(transaction)
     db.session.commit()
@@ -385,8 +438,8 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone=""):
     api_result = cheapdatahub_request("cable/purchase/", data=payload)
 
     if _is_success(api_result):
-        profit_amount = round(selling_price - float(plan.cost_price), 2)
-        user.wallet_balance = round(user.wallet_balance - selling_price, 2)
+        profit_amount = round(charge_amount - float(plan.cost_price), 2)
+        user.wallet_balance = round(user.wallet_balance - charge_amount, 2)
         transaction.status = "success"
         transaction.profit = profit_amount
         transaction.details.update({
@@ -397,8 +450,11 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone=""):
             transaction_id=transaction.id, user_id=user.id,
             category="cable_tv", amount=profit_amount
         ))
-        _award_referral_commission(user, selling_price)
+        _award_referral_commission(user, charge_amount)
+        if applied_coupon:
+            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="cable_tv")
         record_purchase(transaction)
+        award_cashback(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -410,6 +466,8 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone=""):
                 "plan_name":     plan.plan_name,
                 "profit_amount": profit_amount,
                 "selling_price": selling_price,
+                "discount_amount": discount or 0,
+                "amount_charged": charge_amount,
                 "new_balance":   round(user.wallet_balance, 2),
             }
         }

@@ -12,6 +12,8 @@ import logging
 from datetime import datetime
 from models import db, User, Transaction, Profit
 from challenge import record_purchase
+from cashback import award_cashback
+import coupon as coupon_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,12 +66,12 @@ def _is_success(api_result):
     return status in ("successful", "success", "true")
 
 
-def buy_exam_pin(exam_name, quantity, user_email, selling_price=None):
+def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_code=None):
     """
     Purchase exam PIN via VtuNaija.
     exam_name: WAEC | NECO | NABTEB | JAMB
     quantity:  1–10
-    selling_price: total amount charged to user's wallet
+    selling_price: total amount charged to user's wallet (before any coupon discount)
     """
     # 1. Validate inputs
     exam_name = str(exam_name).upper().strip()
@@ -100,8 +102,15 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None):
     if not user:
         return {"status": "error", "message": "User not found"}
 
+    # 2b. Apply coupon (if any) before checking the wallet
+    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
+        user, coupon_code, "exam_pin", selling_price)
+    if coupon_error:
+        return {"status": "error", "message": coupon_error}
+    charge_amount = round(selling_price - (discount or 0), 2)
+
     # 3. Check wallet
-    if user.wallet_balance < selling_price:
+    if user.wallet_balance < charge_amount:
         return {"status": "error", "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
 
     # 4. Create pending transaction
@@ -110,8 +119,11 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None):
 
     transaction = Transaction(
         user_id=user.id, reference=reference, type="exam_pin",
-        service_type="exam_pin", amount=selling_price, profit=0.0,
-        status="pending", details={"exam_name": exam_name, "exam_id": exam_id, "quantity": quantity},
+        service_type="exam_pin", amount=charge_amount, profit=0.0,
+        status="pending", details={"exam_name": exam_name, "exam_id": exam_id, "quantity": quantity,
+                                    "selling_price": selling_price,
+                                    "coupon_code": applied_coupon.code if applied_coupon else None,
+                                    "discount_amount": discount or 0},
     )
     db.session.add(transaction)
     db.session.commit()
@@ -126,9 +138,9 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None):
         # Fallback: derive cost from margin if VtuNaija didn't return plan_amount
         if cost_price <= 0:
             cost_price = round(selling_price / (1 + PROFIT_MARGIN_EXAM_PIN / 100), 2)
-        profit_amount = round(selling_price - cost_price, 2)
+        profit_amount = round(charge_amount - cost_price, 2)
 
-        user.wallet_balance -= selling_price
+        user.wallet_balance -= charge_amount
         transaction.status = "success"
         transaction.profit = profit_amount
         transaction.details.update({
@@ -141,7 +153,10 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None):
             transaction_id=transaction.id, user_id=user.id,
             category="exam_pin", amount=profit_amount,
         ))
+        if applied_coupon:
+            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="exam_pin")
         record_purchase(transaction)
+        award_cashback(transaction)
         db.session.commit()
 
         logger.info(f"[ExamPIN] SUCCESS {reference} | profit=₦{profit_amount}")
@@ -155,6 +170,8 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None):
                 "serial":             api_result.get("serial"),
                 "profit_amount":      profit_amount,
                 "selling_price":      selling_price,
+                "discount_amount":    discount or 0,
+                "amount_charged":     charge_amount,
                 "new_balance":        round(user.wallet_balance, 2),
             },
         }
