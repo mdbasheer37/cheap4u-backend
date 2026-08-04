@@ -91,6 +91,16 @@ def create_app():
     except Exception as e:
         logger.warning(f'coupon_routes.py not loaded — coupon feature disabled: {e}')
 
+    # Merchant Dashboard
+    try:
+        from merchant_routes import merchant_bp, merchant_admin_bp, merchant_api_bp
+        app.register_blueprint(merchant_bp)
+        app.register_blueprint(merchant_admin_bp)
+        app.register_blueprint(merchant_api_bp)
+        logger.info('Merchant Dashboard blueprints loaded')
+    except Exception as e:
+        logger.warning(f'merchant_routes.py not loaded — merchant feature disabled: {e}')
+
     # Public web pages — Delete Account (Google Play requirement),
     # Privacy Policy, Terms of Service
     from public_pages import public_pages_bp
