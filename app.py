@@ -101,6 +101,24 @@ def create_app():
     except Exception as e:
         logger.warning(f'merchant_routes.py not loaded — merchant feature disabled: {e}')
 
+    # Virtual Dollar Card
+    try:
+        from card_routes import card_bp, card_admin_bp
+        app.register_blueprint(card_bp)
+        app.register_blueprint(card_admin_bp)
+        logger.info('Virtual Dollar Card blueprints loaded')
+    except Exception as e:
+        logger.warning(f'card_routes.py not loaded — virtual card feature disabled: {e}')
+
+    # Bill Reminder
+    try:
+        from reminder_routes import reminder_bp, reminder_admin_bp
+        app.register_blueprint(reminder_bp)
+        app.register_blueprint(reminder_admin_bp)
+        logger.info('Bill Reminder blueprints loaded')
+    except Exception as e:
+        logger.warning(f'reminder_routes.py not loaded — bill reminder feature disabled: {e}')
+
     # Public web pages — Delete Account (Google Play requirement),
     # Privacy Policy, Terms of Service
     from public_pages import public_pages_bp
@@ -394,6 +412,12 @@ def create_app():
                     start_cashback_scheduler(app)
                 except Exception as e:
                     logger.warning(f'Cashback scheduler not started (non-fatal): {e}')
+
+                try:
+                    from reminder import start_scheduler as start_reminder_scheduler
+                    start_reminder_scheduler(app)
+                except Exception as e:
+                    logger.warning(f'Bill Reminder scheduler not started (non-fatal): {e}')
             except Exception as e:
                 logger.error(f'DB init error: {e}')
 
