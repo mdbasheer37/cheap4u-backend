@@ -11,6 +11,7 @@
 
 import os
 import uuid
+import time
 import requests
 import logging
 from datetime import datetime
@@ -152,7 +153,9 @@ def buy_airtime(network, phone, amount, user_email, coupon_code=None):
 
     # Exact payload from CheapDataHub docs
     payload    = {"provider_id": provider_id, "phone_number": phone, "amount": selling_price}
+    _t0 = time.monotonic()
     api_result = cheapdatahub_request("airtime/purchase/", data=payload)
+    processing_time_ms = round((time.monotonic() - _t0) * 1000)
 
     if _is_success(api_result):
         profit_percent = PROFIT_MARGINS["airtime"]
@@ -164,6 +167,7 @@ def buy_airtime(network, phone, amount, user_email, coupon_code=None):
         transaction.details.update({
             "cost_price":    round(cost_price, 2),
             "api_reference": api_result.get("reference") or api_result.get("transaction_id"),
+            "processing_time_ms": processing_time_ms,
         })
         db.session.add(Profit(
             transaction_id=transaction.id, user_id=user.id,
@@ -194,6 +198,7 @@ def buy_airtime(network, phone, amount, user_email, coupon_code=None):
             error_msg = "Service temporarily unavailable. Please try again later."
         transaction.status = "failed"
         transaction.details["error"] = error_msg
+        transaction.details["processing_time_ms"] = processing_time_ms
         db.session.commit()
         return {"status": "error", "message": error_msg}
 
@@ -238,7 +243,9 @@ def buy_data(plan_id, phone, user_email, coupon_code=None):
 
     # Exact payload from CheapDataHub docs
     payload    = {"bundle_id": plan_id, "phone_number": phone}
+    _t0 = time.monotonic()
     api_result = cheapdatahub_request("data/purchase/", data=payload)
+    processing_time_ms = round((time.monotonic() - _t0) * 1000)
 
     if _is_success(api_result):
         profit_amount = round(charge_amount - float(plan.cost_price), 2)
@@ -249,6 +256,7 @@ def buy_data(plan_id, phone, user_email, coupon_code=None):
             "cost_price":    float(plan.cost_price),
             "api_reference": api_result.get("reference") or api_result.get("transaction_id"),
         })
+        transaction.details["processing_time_ms"] = processing_time_ms
         db.session.add(Profit(
             transaction_id=transaction.id, user_id=user.id,
             category="data", amount=profit_amount
@@ -276,6 +284,7 @@ def buy_data(plan_id, phone, user_email, coupon_code=None):
         error_msg = api_result.get("message", "Data purchase failed")
         transaction.status = "failed"
         transaction.details["error"] = error_msg
+        transaction.details["processing_time_ms"] = processing_time_ms
         db.session.commit()
         return {"status": "error", "message": error_msg}
 

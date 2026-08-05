@@ -119,6 +119,15 @@ def create_app():
     except Exception as e:
         logger.warning(f'reminder_routes.py not loaded — bill reminder feature disabled: {e}')
 
+    # Smart Price Comparison
+    try:
+        from comparison_routes import comparison_bp, comparison_admin_bp
+        app.register_blueprint(comparison_bp)
+        app.register_blueprint(comparison_admin_bp)
+        logger.info('Smart Price Comparison blueprints loaded')
+    except Exception as e:
+        logger.warning(f'comparison_routes.py not loaded — price comparison feature disabled: {e}')
+
     # Public web pages — Delete Account (Google Play requirement),
     # Privacy Policy, Terms of Service
     from public_pages import public_pages_bp
