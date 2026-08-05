@@ -13,6 +13,7 @@ from datetime import datetime
 from models import db, User, Transaction, Profit
 from challenge import record_purchase
 from cashback import award_cashback
+import gamification as gamification_service
 import coupon as coupon_service
 
 logging.basicConfig(level=logging.INFO)
@@ -157,6 +158,7 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_cod
             coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="exam_pin")
         record_purchase(transaction)
         award_cashback(transaction)
+        gamification_service.record_activity(transaction)
         db.session.commit()
 
         logger.info(f"[ExamPIN] SUCCESS {reference} | profit=₦{profit_amount}")

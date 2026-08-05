@@ -4,6 +4,7 @@ import threading
 from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime, timedelta
 from models import db, User, OTP
+import gamification as gamification_service
 from utils import generate_referral_code, generate_otp, send_sms, validate_email, validate_phone
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 
@@ -219,6 +220,7 @@ def login():
         app = current_app._get_current_object()
         _setup_paystack_background(app, user.id, user.name, user.email, user.phone)
 
+    gamification_service.record_daily_login(user)   # must run BEFORE last_login is overwritten below
     user.last_login = datetime.utcnow()
     db.session.commit()
 

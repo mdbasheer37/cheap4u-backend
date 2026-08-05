@@ -128,6 +128,15 @@ def create_app():
     except Exception as e:
         logger.warning(f'comparison_routes.py not loaded — price comparison feature disabled: {e}')
 
+    # Gamification
+    try:
+        from gamification_routes import gamification_bp, gamification_admin_bp
+        app.register_blueprint(gamification_bp)
+        app.register_blueprint(gamification_admin_bp)
+        logger.info('Gamification blueprints loaded')
+    except Exception as e:
+        logger.warning(f'gamification_routes.py not loaded — gamification feature disabled: {e}')
+
     # Public web pages — Delete Account (Google Play requirement),
     # Privacy Policy, Terms of Service
     from public_pages import public_pages_bp

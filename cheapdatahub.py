@@ -18,6 +18,7 @@ from datetime import datetime
 from models import db, User, Transaction, Profit, DataPlan, CablePlan, ReferralTransaction
 from challenge import record_purchase
 from cashback import award_cashback
+import gamification as gamification_service
 import coupon as coupon_service
 
 logging.basicConfig(level=logging.INFO)
@@ -178,6 +179,7 @@ def buy_airtime(network, phone, amount, user_email, coupon_code=None):
             coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="airtime")
         record_purchase(transaction)
         award_cashback(transaction)
+        gamification_service.record_activity(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -266,6 +268,7 @@ def buy_data(plan_id, phone, user_email, coupon_code=None):
             coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="data")
         record_purchase(transaction)
         award_cashback(transaction)
+        gamification_service.record_activity(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -376,6 +379,7 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email, 
             coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="electricity")
         record_purchase(transaction)
         award_cashback(transaction)
+        gamification_service.record_activity(transaction)
         db.session.commit()
         return {
             "status":  "success",
@@ -464,6 +468,7 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone="", coupon_code=None):
             coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="cable_tv")
         record_purchase(transaction)
         award_cashback(transaction)
+        gamification_service.record_activity(transaction)
         db.session.commit()
         return {
             "status":  "success",
