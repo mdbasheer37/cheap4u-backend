@@ -16,6 +16,7 @@ from spin_models import (
     SpinConfig, SpinSegment, SpinDailyCounter, SpinEntry,
     UserPoints, SpinCouponAward,
 )
+from models import Profit
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +294,11 @@ def perform_spin(user_id, ip_address=None):
                     'message': f'Insufficient balance for an extra spin (₦{cost:,.2f}). '
                                f'Available: ₦{user.wallet_balance:,.2f}'}
         user.wallet_balance = round(user.wallet_balance - cost, 2)
+        # The ₦{cost} fee is pure revenue (no cost-of-goods behind an extra
+        # spin) — log it the same way every other purchase's profit is
+        # logged, so it shows up in admin revenue/profit reporting instead
+        # of just silently leaving the user's wallet with no paper trail.
+        db.session.add(Profit(user_id=user_id, category='spin_fee', amount=cost))
 
     segment = _pick_segment(segments)
     extra = _apply_reward(user, segment)
