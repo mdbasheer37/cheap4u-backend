@@ -163,8 +163,11 @@ def get_profit_summary():
 
     cats = {'airtime': 0.0, 'data': 0.0, 'electricity': 0.0, 'cable_tv': 0.0, 'exam_pin': 0.0}
     for cat, amt in db.session.query(Profit.category, func.sum(Profit.amount)).group_by(Profit.category).all():
-        if cat in cats:
-            cats[cat] = round(float(amt), 2)
+        # FIX: previously `if cat in cats` silently dropped any category
+        # not in the hardcoded list above (e.g. 'spin_fee') from this
+        # breakdown entirely, even though it was correctly counted in the
+        # total. Every real category now shows up here.
+        cats[cat] = round(float(amt), 2)
     if pt == 0 and tt > 0:
         for svc, amt in db.session.query(Transaction.service_type, func.sum(Transaction.profit)).filter(
             Transaction.status == 'success', Transaction.profit > 0).group_by(Transaction.service_type).all():
