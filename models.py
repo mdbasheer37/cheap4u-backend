@@ -1,294 +1,198 @@
-# models.py — Cheap4U SQLAlchemy models
-# Changes from original:
-#   1. DataPlan.plan_id:  added unique=True (prevents duplicate plan IDs)
-#   2. CablePlan.plan_id: added unique=True (prevents duplicate plan IDs)
-#   3. ElectricityProvider.provider_id: added unique=True
-#   4. Transaction.to_dict: added created_at ISO field (used by frontend history sort)
-# Everything else is identical to your original.
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, Enum
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from database import Base
+import enum
 
-from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
-import bcrypt
+class UserRole(str, enum.Enum):
+    user = "user"
+    admin = "admin"
+    moderator = "moderator"
 
-db = SQLAlchemy()
+class ContentType(str, enum.Enum):
+    video = "video"
+    audio = "audio"
+    pdf = "pdf"
+    article = "article"
 
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, index=True, nullable=False)
+    email = Column(String(100), unique=True, index=True, nullable=False)
+    full_name = Column(String(100))
+    hashed_password = Column(String(255), nullable=False)
+    role = Column(Enum(UserRole), default=UserRole.user)
+    avatar = Column(String(255))
+    language = Column(String(10), default="en")
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    favorites = relationship("Favorite", back_populates="user")
+    downloads = relationship("Download", back_populates="user")
+    notifications = relationship("UserNotification", back_populates="user")
+    watch_history = relationship("WatchHistory", back_populates="user")
 
-class User(db.Model):
-    __tablename__ = 'users'
-    id                      = db.Column(db.Integer, primary_key=True)
-    name                    = db.Column(db.String(100), nullable=False)
-    email                   = db.Column(db.String(100), unique=True, nullable=False)
-    phone                   = db.Column(db.String(20), unique=True, nullable=False)
-    password_hash           = db.Column(db.String(200), nullable=False)
-    role                    = db.Column(db.String(20), default='user')
-    is_active               = db.Column(db.Boolean, default=True)
-    is_verified             = db.Column(db.Boolean, default=False)
-    is_premium              = db.Column(db.Boolean, default=False)
-    wallet_balance          = db.Column(db.Float, default=0.0)
-    referral_code           = db.Column(db.String(20), unique=True)
-    referred_by             = db.Column(db.String(20), nullable=True)
-    referred_by_user_id     = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
-    referral_balance        = db.Column(db.Float, default=0.0)
-    referral_earnings       = db.Column(db.Float, default=0.0)
-    total_referrals         = db.Column(db.Integer, default=0)
-    referral_bonus_claimed  = db.Column(db.Boolean, default=False)
-    paystack_customer_code  = db.Column(db.String(100), nullable=True)
-    virtual_account_number  = db.Column(db.String(20), nullable=True)
-    virtual_bank_name       = db.Column(db.String(100), nullable=True)
-    virtual_account_name    = db.Column(db.String(100), nullable=True)
-    transaction_pin_hash    = db.Column(db.String(200), nullable=True)
-    created_at              = db.Column(db.DateTime, default=datetime.utcnow)
-    last_login              = db.Column(db.DateTime, default=datetime.utcnow)
+class Category(Base):
+    __tablename__ = "categories"
+    id = Column(Integer, primary_key=True, index=True)
+    name_en = Column(String(100), nullable=False)
+    name_ha = Column(String(100))
+    slug = Column(String(100), unique=True, index=True)
+    description = Column(Text)
+    icon = Column(String(50))
+    color = Column(String(20))
+    thumbnail = Column(String(255))
+    is_active = Column(Boolean, default=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    lectures = relationship("Lecture", back_populates="category")
 
-    referrer = db.relationship('User', remote_side=[id], backref='referred_users')
+class Lecture(Base):
+    __tablename__ = "lectures"
+    id = Column(Integer, primary_key=True, index=True)
+    title_en = Column(String(255), nullable=False)
+    title_ha = Column(String(255))
+    description_en = Column(Text)
+    description_ha = Column(Text)
+    category_id = Column(Integer, ForeignKey("categories.id"))
+    thumbnail = Column(String(255))
+    duration = Column(Integer)
+    view_count = Column(Integer, default=0)
+    like_count = Column(Integer, default=0)
+    is_featured = Column(Boolean, default=False)
+    is_trending = Column(Boolean, default=False)
+    is_published = Column(Boolean, default=True)
+    tags = Column(Text)
+    date_recorded = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    category = relationship("Category", back_populates="lectures")
+    videos = relationship("Video", back_populates="lecture")
+    audio_files = relationship("AudioFile", back_populates="lecture")
+    favorites = relationship("Favorite", back_populates="lecture")
+    watch_history = relationship("WatchHistory", back_populates="lecture")
 
-    def set_password(self, password):
-        self.password_hash = bcrypt.hashpw(
-            password.encode('utf-8'), bcrypt.gensalt()
-        ).decode('utf-8')
+class Video(Base):
+    __tablename__ = "videos"
+    id = Column(Integer, primary_key=True, index=True)
+    lecture_id = Column(Integer, ForeignKey("lectures.id"))
+    title = Column(String(255), nullable=False)
+    file_path = Column(String(500))
+    stream_url = Column(String(500))
+    youtube_url = Column(String(500))
+    quality = Column(String(20), default="720p")
+    file_size = Column(Integer)
+    duration = Column(Integer)
+    view_count = Column(Integer, default=0)
+    is_downloadable = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    lecture = relationship("Lecture", back_populates="videos")
 
-    def check_password(self, password):
-        return bcrypt.checkpw(
-            password.encode('utf-8'), self.password_hash.encode('utf-8')
-        )
+class AudioFile(Base):
+    __tablename__ = "audio_files"
+    id = Column(Integer, primary_key=True, index=True)
+    lecture_id = Column(Integer, ForeignKey("lectures.id"))
+    title = Column(String(255), nullable=False)
+    file_path = Column(String(500))
+    stream_url = Column(String(500))
+    file_size = Column(Integer)
+    duration = Column(Integer)
+    bitrate = Column(Integer)
+    play_count = Column(Integer, default=0)
+    is_downloadable = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    lecture = relationship("Lecture", back_populates="audio_files")
 
-    def to_dict(self):
-        return {
-            'id':                     self.id,
-            'name':                   self.name,
-            'email':                  self.email,
-            'phone':                  self.phone,
-            'wallet_balance':         round(self.wallet_balance, 2),
-            'referral_balance':       round(self.referral_balance, 2),
-            'referral_earnings':      round(self.referral_earnings, 2),
-            'referral_code':          self.referral_code,
-            'is_verified':            self.is_verified,
-            'is_premium':             self.is_premium,
-            'role':                   self.role,
-            'has_virtual_account':    bool(self.virtual_account_number),
-            'virtual_account_number': self.virtual_account_number,
-            'virtual_bank_name':      self.virtual_bank_name,
-            'virtual_account_name':   self.virtual_account_name,
-            'joined_date':            self.created_at.strftime('%Y-%m-%d'),
-            'last_login':             self.last_login.strftime('%Y-%m-%d %H:%M:%S') if self.last_login else None,
-        }
+class LiveStream(Base):
+    __tablename__ = "live_streams"
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text)
+    stream_url = Column(String(500), nullable=False)
+    thumbnail = Column(String(255))
+    stream_type = Column(String(50))
+    is_live = Column(Boolean, default=False)
+    viewer_count = Column(Integer, default=0)
+    scheduled_at = Column(DateTime(timezone=True))
+    started_at = Column(DateTime(timezone=True))
+    ended_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+class Book(Base):
+    __tablename__ = "books"
+    id = Column(Integer, primary_key=True, index=True)
+    title_en = Column(String(255), nullable=False)
+    title_ha = Column(String(255))
+    author = Column(String(100))
+    description = Column(Text)
+    cover_image = Column(String(255))
+    file_path = Column(String(500))
+    file_size = Column(Integer)
+    page_count = Column(Integer)
+    category = Column(String(100))
+    language = Column(String(20))
+    download_count = Column(Integer, default=0)
+    is_downloadable = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-class Transaction(db.Model):
-    __tablename__ = 'transactions'
-    id           = db.Column(db.Integer, primary_key=True)
-    user_id      = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    reference    = db.Column(db.String(100), unique=True)
-    type         = db.Column(db.String(50))
-    service_type = db.Column(db.String(50))
-    amount       = db.Column(db.Float, nullable=False)
-    profit       = db.Column(db.Float, default=0.0)
-    status       = db.Column(db.String(20), default='pending')
-    details      = db.Column(db.JSON, default=dict)
-    created_at   = db.Column(db.DateTime, default=datetime.utcnow)
+class Favorite(Base):
+    __tablename__ = "favorites"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    lecture_id = Column(Integer, ForeignKey("lectures.id"), nullable=True)
+    book_id = Column(Integer, ForeignKey("books.id"), nullable=True)
+    content_type = Column(Enum(ContentType))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    user = relationship("User", back_populates="favorites")
+    lecture = relationship("Lecture", back_populates="favorites")
 
-    user = db.relationship('User', backref='transactions')
+class Download(Base):
+    __tablename__ = "downloads"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    content_type = Column(Enum(ContentType))
+    content_id = Column(Integer)
+    file_path = Column(String(500))
+    file_size = Column(Integer)
+    progress = Column(Float, default=0.0)
+    status = Column(String(20), default="pending")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True))
+    user = relationship("User", back_populates="downloads")
 
-    def to_dict(self):
-        return {
-            'id':           self.id,
-            'reference':    self.reference,
-            'type':         self.type,
-            'service_type': self.service_type,
-            'amount':       self.amount,
-            'profit':       self.profit,
-            'status':       self.status,
-            'details':      self.details,
-            'date':         self.created_at.strftime('%B %d, %Y %I:%M:%S %p') if self.created_at else None,
-            'created_at':   self.created_at.isoformat() if self.created_at else None,
-        }
+class Notification(Base):
+    __tablename__ = "notifications"
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(255), nullable=False)
+    body = Column(Text)
+    notification_type = Column(String(50))
+    target_url = Column(String(255))
+    image = Column(String(255))
+    is_sent = Column(Boolean, default=False)
+    sent_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    user_notifications = relationship("UserNotification", back_populates="notification")
 
+class UserNotification(Base):
+    __tablename__ = "user_notifications"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    notification_id = Column(Integer, ForeignKey("notifications.id"))
+    is_read = Column(Boolean, default=False)
+    read_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    user = relationship("User", back_populates="notifications")
+    notification = relationship("Notification", back_populates="user_notifications")
 
-class OTP(db.Model):
-    __tablename__ = 'otps'
-    id         = db.Column(db.Integer, primary_key=True)
-    user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
-    email      = db.Column(db.String(100))
-    phone      = db.Column(db.String(20))
-    code       = db.Column(db.String(6), nullable=False)
-    purpose    = db.Column(db.String(50), default='registration')
-    is_used    = db.Column(db.Boolean, default=False)
-    expires_at = db.Column(db.DateTime, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-class Referral(db.Model):
-    __tablename__ = 'referrals'
-    id          = db.Column(db.Integer, primary_key=True)
-    referrer_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    referred_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    status      = db.Column(db.String(20), default='pending')
-    bonus_paid  = db.Column(db.Boolean, default=False)
-    created_at  = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-class ReferralTransaction(db.Model):
-    __tablename__ = 'referral_transactions'
-    id               = db.Column(db.Integer, primary_key=True)
-    referrer_id      = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    referred_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    amount           = db.Column(db.Float, nullable=False)
-    type             = db.Column(db.String(20), nullable=False)
-    created_at       = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-class Profit(db.Model):
-    __tablename__ = 'profits'
-    id             = db.Column(db.Integer, primary_key=True)
-    transaction_id = db.Column(db.Integer, db.ForeignKey('transactions.id'), nullable=True)
-    user_id        = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
-    category       = db.Column(db.String(50))
-    amount         = db.Column(db.Float, nullable=False)
-    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-class WithdrawalRequest(db.Model):
-    __tablename__ = 'withdrawal_requests'
-    id             = db.Column(db.Integer, primary_key=True)
-    user_id        = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    amount         = db.Column(db.Float, nullable=False)
-    bank_name      = db.Column(db.String(100))
-    account_number = db.Column(db.String(20))
-    account_name   = db.Column(db.String(100))
-    status         = db.Column(db.String(20), default='pending')
-    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
-    processed_at   = db.Column(db.DateTime)
-    user = db.relationship('User', backref='withdrawals')
- 
-
-class DataPlan(db.Model):
-    __tablename__ = 'data_plans'
-    id            = db.Column(db.Integer, primary_key=True)
-    # FIX: added unique=True — prevents duplicate plan IDs that cause wrong price lookups
-    plan_id       = db.Column(db.Integer, nullable=False, unique=True)
-    provider      = db.Column(db.String(50), nullable=False)
-    size          = db.Column(db.String(50))
-    duration      = db.Column(db.String(50))
-    selling_price = db.Column(db.Float, nullable=False)
-    cost_price    = db.Column(db.Float, nullable=False)
-    # NEW: tags each plan as SME / Gifting / Corporate / SME2 / CG / Regular etc, so the
-    # frontend's data-type tabs actually filter to different plans instead of all
-    # showing the same list. Defaults to "Gifting" for existing rows since that's the
-    # standard tier all current plans were seeded as.
-    plan_type     = db.Column(db.String(30), nullable=False, default='Gifting')
-    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-class CablePlan(db.Model):
-    __tablename__ = 'cable_plans'
-    id            = db.Column(db.Integer, primary_key=True)
-    # FIX: added unique=True — prevents duplicate plan IDs that cause wrong price lookups
-    plan_id       = db.Column(db.Integer, nullable=False, unique=True)
-    provider      = db.Column(db.String(50), nullable=False)
-    plan_name     = db.Column(db.String(100), nullable=False)
-    selling_price = db.Column(db.Float, nullable=False)
-    cost_price    = db.Column(db.Float, nullable=False)
-    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-class ElectricityProvider(db.Model):
-    __tablename__ = 'electricity_providers'
-    id               = db.Column(db.Integer, primary_key=True)
-    # FIX: added unique=True
-    provider_id      = db.Column(db.Integer, nullable=False, unique=True)
-    name             = db.Column(db.String(100), nullable=False)
-    discount_percent = db.Column(db.Float, default=0.0)
-    created_at       = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-# ─────────────────────────────────────────────────────────────────────
-# SUPPORT CENTER — AI Chat Assistant
-# Added to support the in-app "Support Center" feature (replaces the
-# old WhatsApp redirect button). Stores every chat turn so users see
-# their chat history when they reopen the AI Assistant, and so support
-# staff can audit conversations if a user has to be escalated to a
-# human agent (phone / email).
-# ─────────────────────────────────────────────────────────────────────
-class SupportChatMessage(db.Model):
-    __tablename__ = 'support_chat_messages'
-
-    id         = db.Column(db.Integer, primary_key=True)
-    # nullable — kept nullable for backward compatibility with any old
-    # guest rows; the AI Assistant now requires login (JWT), so new
-    # rows always have a user_id.
-    user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True, index=True)
-    # groups messages into one conversation (one per logged-in user)
-    session_id = db.Column(db.String(64), nullable=False, index=True)
-    role       = db.Column(db.String(20), nullable=False)   # 'user' | 'assistant'
-    content    = db.Column(db.Text, nullable=False)
-    # smart-action code detected in a user message (e.g. 'data_purchase'),
-    # stored on the assistant's reply row so the app can re-offer the
-    # shortcut button even when history is reloaded later
-    action     = db.Column(db.String(40), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-
-    def to_dict(self):
-        return {
-            'id':         self.id,
-            'role':       self.role,
-            'content':    self.content,
-            'action':     self.action,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-        }
-
-
-class ChatFeedback(db.Model):
-    """Thumbs up/down on an AI Assistant reply, submitted via POST /api/chat/feedback."""
-    __tablename__ = 'chat_feedback'
-
-    id         = db.Column(db.Integer, primary_key=True)
-    user_id    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    message_id = db.Column(db.Integer, db.ForeignKey('support_chat_messages.id'), nullable=False, index=True)
-    rating     = db.Column(db.String(10), nullable=False)   # 'up' | 'down'
-    comment    = db.Column(db.Text, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    def to_dict(self):
-        return {
-            'id':         self.id,
-            'message_id': self.message_id,
-            'rating':     self.rating,
-            'comment':    self.comment,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-        }
-
-
-# ─────────────────────────────────────────────────────────────────────
-# GOOGLE PLAY — Delete Account requirement
-# Stores requests submitted from the public /delete-account web page.
-# Not linked to the User table by foreign key on purpose — the person
-# submitting may not be logged in / may have forgotten their exact
-# account email, so this is a support queue admins process manually,
-# the same way the page tells the user to expect ("contact us").
-# ─────────────────────────────────────────────────────────────────────
-class AccountDeletionRequest(db.Model):
-    __tablename__ = 'account_deletion_requests'
-
-    id         = db.Column(db.Integer, primary_key=True)
-    full_name  = db.Column(db.String(100), nullable=False)
-    email      = db.Column(db.String(100), nullable=False, index=True)
-    phone      = db.Column(db.String(20), nullable=False)
-    reason     = db.Column(db.Text, nullable=True)
-    # 'pending' | 'processing' | 'completed' | 'rejected'
-    status     = db.Column(db.String(20), default='pending', nullable=False)
-    ip_address = db.Column(db.String(100), nullable=True)
-    user_agent = db.Column(db.String(255), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-    processed_at = db.Column(db.DateTime, nullable=True)
-
-    def to_dict(self):
-        return {
-            'id':           self.id,
-            'full_name':    self.full_name,
-            'email':        self.email,
-            'phone':        self.phone,
-            'reason':       self.reason,
-            'status':       self.status,
-            'created_at':   self.created_at.isoformat() if self.created_at else None,
-            'processed_at': self.processed_at.isoformat() if self.processed_at else None,
-        }
+class WatchHistory(Base):
+    __tablename__ = "watch_history"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    lecture_id = Column(Integer, ForeignKey("lectures.id"))
+    content_type = Column(Enum(ContentType))
+    progress = Column(Float, default=0.0)
+    duration = Column(Integer)
+    last_watched = Column(DateTime(timezone=True), server_default=func.now())
+    user = relationship("User", back_populates="watch_history")
+    lecture = relationship("Lecture", back_populates="watch_history")
