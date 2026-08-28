@@ -386,58 +386,89 @@ def create_app():
     def index():
         return jsonify({'message': 'Cheap4U API is running'})
 
-    # ── Create DB tables on first request ────────────────────────────
-    # Using before_request avoids DNS-not-ready errors at startup
-    @app.before_request
-    def create_tables():
-        if not getattr(app, '_tables_created', False):
+    # ── One-time DB/table/plan initialization ──────────────────────────
+    # This used to run inside @app.before_request, which meant whichever
+    # user's request happened to be first after every cold start (very
+    # often the Android app's own /health check right after waking a
+    # sleeping Render instance) got stuck waiting for db.create_all(),
+    # a schema-migration ALTER TABLE, init_plans's ~40+ idempotency
+    # SELECT/INSERT round-trips, AND the startup of three background
+    # schedulers — all before that user got any response at all.
+    #
+    # It's moved here so it runs exactly once, during process boot
+    # (i.e. as part of Render/gunicorn's own startup sequence), instead
+    # of inside the response path of a real user's request. Every
+    # operation inside is already idempotent (db.create_all() only
+    # creates missing tables, the ALTER TABLE uses IF NOT EXISTS,
+    # init_plans checks for existing rows before inserting, and each
+    # scheduler guards itself with a module-level "already started"
+    # flag) — so it's safe to run every time a worker boots.
+    def _init_db_and_extras():
+        if getattr(app, '_tables_created', False):
+            return
+        try:
+            db.create_all()
+            # db.create_all() only creates tables that don't exist yet —
+            # it does NOT add new columns to a table that was already
+            # created before the column existed in the model (e.g.
+            # support_chat_messages.action, added when the AI Assistant
+            # feature was upgraded). Patch those in directly so an
+            # older, already-deployed database self-heals on the next
+            # boot instead of every /api/chat call failing with
+            # "column ... does not exist".
             try:
-                db.create_all()
-                # db.create_all() only creates tables that don't exist yet —
-                # it does NOT add new columns to a table that was already
-                # created before the column existed in the model (e.g.
-                # support_chat_messages.action, added when the AI Assistant
-                # feature was upgraded). Patch those in directly so an
-                # older, already-deployed database self-heals on the next
-                # request instead of every /api/chat call failing with
-                # "column ... does not exist".
-                try:
-                    with db.engine.connect() as conn:
-                        conn.execute(db.text(
-                            "ALTER TABLE support_chat_messages "
-                            "ADD COLUMN IF NOT EXISTS action VARCHAR(40)"
-                        ))
-                        conn.commit()
-                    logger.info('✅ Verified support_chat_messages.action column')
-                except Exception as e:
-                    logger.warning(f'Column migration check failed (non-fatal): {e}')
-                try:
-                    from init_plans import init_all
-                    init_all()
-                except Exception as e:
-                    logger.warning(f'init_plans error (non-fatal): {e}')
-                app._tables_created = True
-                logger.info('✅ DB tables ready')
-
-                try:
-                    from challenge import start_scheduler
-                    start_scheduler(app)
-                except Exception as e:
-                    logger.warning(f'Challenge scheduler not started (non-fatal): {e}')
-
-                try:
-                    from cashback import start_scheduler as start_cashback_scheduler
-                    start_cashback_scheduler(app)
-                except Exception as e:
-                    logger.warning(f'Cashback scheduler not started (non-fatal): {e}')
-
-                try:
-                    from reminder import start_scheduler as start_reminder_scheduler
-                    start_reminder_scheduler(app)
-                except Exception as e:
-                    logger.warning(f'Bill Reminder scheduler not started (non-fatal): {e}')
+                with db.engine.connect() as conn:
+                    conn.execute(db.text(
+                        "ALTER TABLE support_chat_messages "
+                        "ADD COLUMN IF NOT EXISTS action VARCHAR(40)"
+                    ))
+                    conn.commit()
+                logger.info('✅ Verified support_chat_messages.action column')
             except Exception as e:
-                logger.error(f'DB init error: {e}')
+                logger.warning(f'Column migration check failed (non-fatal): {e}')
+            try:
+                from init_plans import init_all
+                init_all()
+            except Exception as e:
+                logger.warning(f'init_plans error (non-fatal): {e}')
+            app._tables_created = True
+            logger.info('✅ DB tables ready')
+
+            try:
+                from challenge import start_scheduler
+                start_scheduler(app)
+            except Exception as e:
+                logger.warning(f'Challenge scheduler not started (non-fatal): {e}')
+
+            try:
+                from cashback import start_scheduler as start_cashback_scheduler
+                start_cashback_scheduler(app)
+            except Exception as e:
+                logger.warning(f'Cashback scheduler not started (non-fatal): {e}')
+
+            try:
+                from reminder import start_scheduler as start_reminder_scheduler
+                start_reminder_scheduler(app)
+            except Exception as e:
+                logger.warning(f'Bill Reminder scheduler not started (non-fatal): {e}')
+        except Exception as e:
+            logger.error(f'DB init error: {e}')
+
+    # Run it now, as part of app boot, so it's already done long before
+    # gunicorn starts accepting real traffic.
+    with app.app_context():
+        _init_db_and_extras()
+
+    # Lightweight self-healing fallback ONLY: if the database genuinely
+    # wasn't reachable yet at boot (e.g. DNS/Postgres not ready), this
+    # retries the (still-idempotent) init on the next request instead of
+    # leaving the app permanently uninitialized. In the normal case
+    # (init already succeeded above), this is a single fast attribute
+    # check on every request — no DB work, no added latency.
+    @app.before_request
+    def _ensure_db_initialized():
+        if not getattr(app, '_tables_created', False):
+            _init_db_and_extras()
 
     return app
 
