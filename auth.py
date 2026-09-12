@@ -1,43 +1,94 @@
 # auth.py — Fixed: DVA in background thread + referral bonus display
+#
+# CHANGES (OTP reliability + server-side PIN persistence):
+#   - can_resend_otp() is now DB-backed (was an in-memory dict — lost on
+#     every restart/deploy, and unsafe if this ever runs with >1 worker).
+#   - verify_otp() now locks the OTP row with_for_update() so two
+#     simultaneous verify requests for the same code can't both succeed.
+#   - _send_otp() captures Termii's message_id and returns an honest
+#     "accepted, not confirmed delivered" message (see utils.send_sms).
+#   - NEW: login_pin_hash on the User is now the source of truth for the
+#     "quick PIN" login (previously stored ONLY on-device — see
+#     set-login-pin / login-with-pin / reset-pin below).
+#   - NEW: PIN lockout after repeated wrong attempts (models.py).
 import bcrypt
-import threading
 from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime, timedelta
 from models import db, User, OTP
 import gamification as gamification_service
 from utils import generate_referral_code, generate_otp, send_sms, validate_email, validate_phone
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from extensions import limiter
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
-_otp_last_sent = {}
+
+OTP_RESEND_COOLDOWN_SECONDS = 60
+OTP_EXPIRY_MINUTES = 10
+
+# Fixed dummy hash used to keep bcrypt.checkpw() timing similar whether or
+# not an account/PIN exists, so a login-with-pin request can't be used to
+# probe which phone numbers/emails have accounts.
+_DUMMY_HASH = bcrypt.hashpw(b'not-a-real-pin', bcrypt.gensalt()).decode('utf-8')
 
 
-def invalidate_existing_otps(user_id):
-    OTP.query.filter_by(user_id=user_id, is_used=False).update({'is_used': True})
+def invalidate_existing_otps(user_id, purpose=None):
+    q = OTP.query.filter_by(user_id=user_id, is_used=False)
+    if purpose:
+        q = q.filter_by(purpose=purpose)
+    q.update({'is_used': True})
     db.session.commit()
 
 
-def can_resend_otp(user_id):
-    last = _otp_last_sent.get(user_id)
-    if last and (datetime.utcnow() - last).total_seconds() < 60:
+def can_resend_otp(user_id, purpose='registration'):
+    """
+    DB-backed cooldown check (replaces the old in-memory dict, which reset
+    on every deploy/restart and would not be safe if this service ever runs
+    with more than one worker process).
+    """
+    last = (
+        OTP.query
+        .filter_by(user_id=user_id, purpose=purpose)
+        .order_by(OTP.created_at.desc())
+        .first()
+    )
+    if last and (datetime.utcnow() - last.created_at).total_seconds() < OTP_RESEND_COOLDOWN_SECONDS:
         return False
-    _otp_last_sent[user_id] = datetime.utcnow()
     return True
 
 
 def _send_otp(user, purpose='registration'):
-    invalidate_existing_otps(user.id)
+    """
+    Generates a fresh OTP (invalidating any earlier unused one for the same
+    purpose, so an old code can never be used after a newer one is issued),
+    sends it via Termii, and records the provider's message_id when given.
+
+    Returns (sms_sent: bool, otp_code: str, user_message: str).
+    """
+    invalidate_existing_otps(user.id, purpose=purpose)
     otp_code   = generate_otp()
-    expires_at = datetime.utcnow() + timedelta(minutes=10)
+    expires_at = datetime.utcnow() + timedelta(minutes=OTP_EXPIRY_MINUTES)
     otp = OTP(
         user_id=user.id, email=user.email, phone=user.phone,
         code=otp_code, purpose=purpose, expires_at=expires_at,
     )
     db.session.add(otp)
     db.session.commit()
-    message  = f"Your Cheap4u verification code is {otp_code}. Valid for 10 minutes. Do not share."
-    sms_sent = send_sms(user.phone, message)
-    return sms_sent, otp_code
+
+    message = f"Your Cheap4u verification code is {otp_code}. Valid for {OTP_EXPIRY_MINUTES} minutes. Do not share."
+    sms_sent, message_id, error = send_sms(user.phone, message)
+
+    if message_id:
+        otp.provider_message_id = message_id
+        db.session.commit()
+
+    if sms_sent:
+        user_message = ("OTP has been sent. If you don't receive it shortly, "
+                         "please wait before requesting another OTP.")
+    else:
+        current_app.logger.error(f"OTP send failed for user {user.id} ({purpose}): {error}")
+        user_message = "We couldn't send the OTP right now. Please try again in a moment."
+
+    return sms_sent, otp_code, user_message
 
 
 def _setup_paystack_background(app, user_id, name, email, phone):
@@ -45,6 +96,8 @@ def _setup_paystack_background(app, user_id, name, email, phone):
     Create Paystack customer + DVA in background thread.
     FIX: captures app object BEFORE starting thread, uses explicit app_context inside.
     """
+    import threading
+
     def _run():
         with app.app_context():
             try:
@@ -81,8 +134,24 @@ def _setup_paystack_background(app, user_id, name, email, phone):
     t.start()
 
 
+def _find_user_by_identifier(identifier):
+    """Look up a user by email or Nigerian local phone number."""
+    identifier = (identifier or '').strip()
+    if not identifier:
+        return None
+    if '@' in identifier:
+        return User.query.filter_by(email=identifier.lower()).first()
+    return User.query.filter_by(phone=identifier).first()
+
+
+def _lock_message(seconds):
+    minutes = max(1, seconds // 60)
+    return f"Too many incorrect attempts. Try again in {minutes} minute(s)."
+
+
 # ── Register ──────────────────────────────────────────────────────────
 @auth_bp.route('/register', methods=['POST'])
+@limiter.limit("10 per hour")
 def register():
     data     = request.get_json() or {}
     name     = (data.get('name') or '').strip()
@@ -96,7 +165,7 @@ def register():
     if not validate_email(email):
         return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
     if not validate_phone(phone):
-        return jsonify({'status': 'error', 'message': 'Phone must be 11 digits'}), 400
+        return jsonify({'status': 'error', 'message': 'Enter a valid Nigerian phone number (e.g. 080XXXXXXXX)'}), 400
     if len(password) < 6:
         return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'}), 400
     if User.query.filter_by(email=email).first():
@@ -129,38 +198,39 @@ def register():
     app = current_app._get_current_object()
     _setup_paystack_background(app, user.id, name, email, phone)
 
-    # Send OTP — return 200 even if SMS fails
-    sms_sent, _ = _send_otp(user, purpose='registration')
-    if not sms_sent:
-        current_app.logger.error(f'OTP SMS failed for {phone}')
-        return jsonify({
-            'status':  'success',
-            'message': 'Account created. SMS failed — tap Resend OTP on next screen.',
-            'data':    {'user_id': user.id, 'phone': phone, 'sms_failed': True},
-        })
-
+    # Send OTP — return 200 even if SMS fails (user can tap Resend)
+    sms_sent, _, otp_message = _send_otp(user, purpose='registration')
     return jsonify({
         'status':  'success',
-        'message': 'Registration successful. OTP sent to your phone.',
-        'data':    {'user_id': user.id, 'phone': phone},
+        'message': f'Account created. {otp_message}',
+        'data':    {'user_id': user.id, 'phone': phone, 'sms_failed': not sms_sent},
     })
 
 
 # ── Verify OTP ────────────────────────────────────────────────────────
 @auth_bp.route('/verify-otp', methods=['POST'])
+@limiter.limit("15 per 10 minutes")
 def verify_otp():
     data     = request.get_json() or {}
     user_id  = data.get('user_id')
-    otp_code = data.get('otp_code')
+    otp_code = (data.get('otp_code') or '').strip()
     if not user_id or not otp_code:
         return jsonify({'status': 'error', 'message': 'user_id and otp_code required'}), 400
 
-    otp = OTP.query.filter_by(
-        user_id=user_id, code=otp_code, is_used=False, purpose='registration'
-    ).first()
+    # Row-locked so two simultaneous requests with the same code can't both
+    # succeed (matches the with_for_update() pattern already used for wallet
+    # updates elsewhere in this backend).
+    otp = (
+        OTP.query
+        .filter_by(user_id=user_id, code=otp_code, is_used=False, purpose='registration')
+        .with_for_update()
+        .first()
+    )
     if not otp:
+        db.session.rollback()
         return jsonify({'status': 'error', 'message': 'Invalid OTP code'}), 400
     if datetime.utcnow() > otp.expires_at:
+        db.session.rollback()
         return jsonify({'status': 'error', 'message': 'OTP expired. Request a new one.'}), 400
 
     otp.is_used      = True
@@ -178,6 +248,7 @@ def verify_otp():
 
 # ── Resend OTP ────────────────────────────────────────────────────────
 @auth_bp.route('/resend-otp', methods=['POST'])
+@limiter.limit("5 per 10 minutes")
 def resend_otp():
     data    = request.get_json() or {}
     user_id = data.get('user_id')
@@ -186,16 +257,17 @@ def resend_otp():
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
-    if not can_resend_otp(user_id):
-        return jsonify({'status': 'error', 'message': 'Wait 60 seconds before requesting another OTP'}), 429
-    sms_sent, _ = _send_otp(user, purpose='registration')
+    if not can_resend_otp(user_id, purpose='registration'):
+        return jsonify({'status': 'error', 'message': f'Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another OTP'}), 429
+    sms_sent, _, otp_message = _send_otp(user, purpose='registration')
     if not sms_sent:
-        return jsonify({'status': 'error', 'message': 'Could not send OTP. Check your phone number.'}), 500
-    return jsonify({'status': 'success', 'message': 'OTP resent to your phone.'})
+        return jsonify({'status': 'error', 'message': otp_message}), 500
+    return jsonify({'status': 'success', 'message': otp_message})
 
 
-# ── Login ─────────────────────────────────────────────────────────────
+# ── Login (email + password) ────────────────────────────────────────────
 @auth_bp.route('/login', methods=['POST'])
+@limiter.limit("15 per 10 minutes")
 def login():
     data     = request.get_json() or {}
     email    = (data.get('email') or '').strip().lower()
@@ -209,9 +281,9 @@ def login():
     if not user.is_active:
         return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403
     if not user.is_verified:
-        sms_sent, _ = _send_otp(user, purpose='registration')
+        sms_sent, _, otp_message = _send_otp(user, purpose='registration')
         return jsonify({
-            'status': 'error', 'message': 'Account not verified. OTP sent to your phone.',
+            'status': 'error', 'message': f'Account not verified. {otp_message}',
             'requires_verification': True, 'user_id': user.id, 'phone': user.phone,
         }), 403
 
@@ -232,30 +304,139 @@ def login():
     })
 
 
-# ── Set PIN ───────────────────────────────────────────────────────────
+# ── Login with PIN (server-side — NEW) ──────────────────────────────────
+# This is the endpoint that makes the Login PIN actually belong to the
+# account rather than the device: it takes just a phone/email + PIN (no
+# password, no existing session) and, on success, issues a brand new JWT —
+# exactly like /login does. This is what lets a reinstalled app or a second
+# phone use the same PIN instead of forcing the user through "Create PIN"
+# again.
+@auth_bp.route('/login-with-pin', methods=['POST'])
+@limiter.limit("10 per 10 minutes")
+def login_with_pin():
+    data       = request.get_json() or {}
+    identifier = data.get('identifier') or data.get('phone') or data.get('email')
+    pin        = (data.get('pin') or '').strip()
+
+    if not identifier or not pin:
+        return jsonify({'status': 'error', 'message': 'Phone/email and PIN are required'}), 400
+
+    user = _find_user_by_identifier(identifier)
+
+    if not user:
+        # Do a dummy bcrypt compare so a nonexistent account doesn't respond
+        # measurably faster than a wrong-PIN response (avoids leaking which
+        # phone numbers/emails have accounts via timing).
+        bcrypt.checkpw(pin.encode('utf-8'), _DUMMY_HASH.encode('utf-8'))
+        return jsonify({'status': 'error', 'message': 'Incorrect phone/email or PIN'}), 401
+
+    if not user.is_active:
+        return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403
+
+    result = user.check_login_pin(pin)
+    db.session.commit()
+
+    if result == 'locked':
+        return jsonify({
+            'status': 'error',
+            'message': _lock_message(user.login_pin_lock_remaining()),
+        }), 429
+    if result == 'not_set':
+        return jsonify({
+            'status': 'error',
+            'message': "PIN login isn't set up for this account yet. Please log in with your password.",
+        }), 400
+    if result != 'ok':
+        return jsonify({'status': 'error', 'message': 'Incorrect phone/email or PIN'}), 401
+
+    if not user.is_verified:
+        return jsonify({
+            'status': 'error', 'message': 'Account not verified. Please log in with your password.',
+        }), 403
+
+    gamification_service.record_daily_login(user)
+    user.last_login = datetime.utcnow()
+    db.session.commit()
+
+    token = create_access_token(identity=str(user.id))
+    return jsonify({
+        'status':  'success',
+        'message': 'Login successful',
+        'data':    {'user': user.to_dict(), 'session_token': token},
+    })
+
+
+# ── Set / change Login PIN ───────────────────────────────────────────────
+@auth_bp.route('/set-login-pin', methods=['POST'])
+@jwt_required()
+@limiter.limit("10 per hour")
+def set_login_pin():
+    user_id = int(get_jwt_identity())
+    user    = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+    data    = request.get_json() or {}
+    old_pin = data.get('old_pin')
+    new_pin = data.get('new_pin')
+
+    if user.login_pin_hash:
+        # A PIN already exists — changing it requires proving the old one
+        # (unless the caller is going through the OTP-verified /reset-pin
+        # flow instead, which doesn't touch this endpoint).
+        if not old_pin:
+            return jsonify({'status': 'error', 'message': 'Current PIN required to change it'}), 400
+        result = user.check_login_pin(old_pin)
+        db.session.commit()
+        if result == 'locked':
+            return jsonify({'status': 'error', 'message': _lock_message(user.login_pin_lock_remaining())}), 429
+        if result != 'ok':
+            return jsonify({'status': 'error', 'message': 'Incorrect current PIN'}), 401
+
+    if not new_pin or not new_pin.isdigit() or not (4 <= len(new_pin) <= 6):
+        return jsonify({'status': 'error', 'message': 'PIN must be 4-6 digits'}), 400
+
+    user.set_login_pin(new_pin)
+    db.session.commit()
+    return jsonify({'status': 'success', 'message': 'Login PIN set successfully'})
+
+
+# ── Set / change Transaction PIN ─────────────────────────────────────────
 @auth_bp.route('/set-pin', methods=['POST'])
 @jwt_required()
+@limiter.limit("10 per hour")
 def set_transaction_pin():
     user_id = int(get_jwt_identity())
     user    = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
     data    = request.get_json() or {}
     old_pin = data.get('old_pin')
     new_pin = data.get('new_pin')
-    if old_pin and user.transaction_pin_hash:
-        if not bcrypt.checkpw(old_pin.encode(), user.transaction_pin_hash.encode()):
+
+    if user.transaction_pin_hash:
+        if not old_pin:
+            return jsonify({'status': 'error', 'message': 'Current PIN required to change it'}), 400
+        result = user.check_transaction_pin(old_pin)
+        db.session.commit()
+        if result == 'locked':
+            return jsonify({'status': 'error', 'message': _lock_message(user.transaction_pin_lock_remaining())}), 429
+        if result != 'ok':
             return jsonify({'status': 'error', 'message': 'Incorrect current PIN'}), 401
+
     if not new_pin or not new_pin.isdigit() or not (4 <= len(new_pin) <= 6):
         return jsonify({'status': 'error', 'message': 'PIN must be 4-6 digits'}), 400
-    user.transaction_pin_hash = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
+
+    user.set_transaction_pin(new_pin)
     db.session.commit()
     return jsonify({'status': 'success', 'message': 'PIN set successfully'})
 
 
-# ── Verify PIN ────────────────────────────────────────────────────────
+# ── Verify Transaction PIN (standalone check, e.g. before showing a confirm screen) ──
 @auth_bp.route('/verify-pin', methods=['POST'])
 @jwt_required()
+@limiter.limit("20 per 10 minutes")
 def verify_pin():
     user_id = int(get_jwt_identity())
     user    = User.query.get(user_id)
@@ -265,15 +446,104 @@ def verify_pin():
     pin  = data.get('pin')
     if not pin:
         return jsonify({'status': 'error', 'message': 'PIN required'}), 400
-    if not user.transaction_pin_hash:
+
+    result = user.check_transaction_pin(pin)
+    db.session.commit()
+
+    if result == 'not_set':
         return jsonify({'status': 'error', 'message': 'No PIN set. Please set a PIN first.'}), 400
-    if bcrypt.checkpw(pin.encode(), user.transaction_pin_hash.encode()):
+    if result == 'locked':
+        return jsonify({'status': 'error', 'message': _lock_message(user.transaction_pin_lock_remaining())}), 429
+    if result == 'ok':
         return jsonify({'status': 'success', 'message': 'PIN verified'})
     return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 401
 
 
+# ── Forgot PIN (login or transaction) ────────────────────────────────────
+@auth_bp.route('/forgot-pin', methods=['POST'])
+@limiter.limit("5 per 10 minutes")
+def forgot_pin():
+    data     = request.get_json() or {}
+    email    = (data.get('email') or '').strip().lower()
+    phone    = (data.get('phone') or '').strip()
+    pin_type = (data.get('pin_type') or '').strip().lower()
+
+    if pin_type not in ('login', 'transaction'):
+        return jsonify({'status': 'error', 'message': "pin_type must be 'login' or 'transaction'"}), 400
+
+    user = None
+    if email:
+        user = User.query.filter_by(email=email).first()
+    elif phone:
+        user = User.query.filter_by(phone=phone).first()
+
+    generic_ok = jsonify({'status': 'success', 'message': 'If this account exists, an OTP has been sent.'})
+    if not user:
+        return generic_ok
+
+    purpose = f'{pin_type}_pin_reset'
+    if not can_resend_otp(user.id, purpose=purpose):
+        return jsonify({'status': 'error', 'message': f'Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another OTP.'}), 429
+
+    sms_sent, _, otp_message = _send_otp(user, purpose=purpose)
+    if not sms_sent:
+        return jsonify({'status': 'error', 'message': otp_message}), 500
+    return jsonify({
+        'status':  'success',
+        'message': otp_message,
+        'data':    {'user_id': user.id, 'phone': user.phone},
+    })
+
+
+# ── Reset PIN (login or transaction) — requires a verified OTP ──────────
+@auth_bp.route('/reset-pin', methods=['POST'])
+@limiter.limit("10 per 10 minutes")
+def reset_pin():
+    data     = request.get_json() or {}
+    user_id  = data.get('user_id')
+    otp_code = (data.get('otp_code') or '').strip()
+    pin_type = (data.get('pin_type') or '').strip().lower()
+    new_pin  = data.get('new_pin')
+
+    if not all([user_id, otp_code, pin_type, new_pin]):
+        return jsonify({'status': 'error', 'message': 'user_id, otp_code, pin_type and new_pin required'}), 400
+    if pin_type not in ('login', 'transaction'):
+        return jsonify({'status': 'error', 'message': "pin_type must be 'login' or 'transaction'"}), 400
+    if not str(new_pin).isdigit() or not (4 <= len(str(new_pin)) <= 6):
+        return jsonify({'status': 'error', 'message': 'PIN must be 4-6 digits'}), 400
+
+    purpose = f'{pin_type}_pin_reset'
+    otp = (
+        OTP.query
+        .filter_by(user_id=user_id, code=otp_code, is_used=False, purpose=purpose)
+        .with_for_update()
+        .first()
+    )
+    if not otp:
+        db.session.rollback()
+        return jsonify({'status': 'error', 'message': 'Invalid OTP code'}), 400
+    if datetime.utcnow() > otp.expires_at:
+        db.session.rollback()
+        return jsonify({'status': 'error', 'message': 'OTP expired. Request a new one.'}), 400
+
+    user = User.query.get(user_id)
+    if not user:
+        db.session.rollback()
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+    if pin_type == 'login':
+        user.set_login_pin(str(new_pin))
+    else:
+        user.set_transaction_pin(str(new_pin))
+
+    otp.is_used = True
+    db.session.commit()
+    return jsonify({'status': 'success', 'message': f'{pin_type.capitalize()} PIN reset successfully'})
+
+
 # ── Forgot Password ───────────────────────────────────────────────────
 @auth_bp.route('/forgot-password', methods=['POST'])
+@limiter.limit("5 per 10 minutes")
 def forgot_password():
     data  = request.get_json() or {}
     email = (data.get('email') or '').strip().lower()
@@ -285,20 +555,21 @@ def forgot_password():
         user = User.query.filter_by(phone=phone).first()
     if not user:
         return jsonify({'status': 'success', 'message': 'If this account exists, an OTP has been sent.'})
-    if not can_resend_otp(user.id):
+    if not can_resend_otp(user.id, purpose='password_reset'):
         return jsonify({'status': 'error', 'message': 'Wait 60 seconds before requesting another OTP.'}), 429
-    sms_sent, _ = _send_otp(user, purpose='password_reset')
+    sms_sent, _, otp_message = _send_otp(user, purpose='password_reset')
     if not sms_sent:
-        return jsonify({'status': 'error', 'message': 'Could not send OTP. Check your phone number.'}), 500
+        return jsonify({'status': 'error', 'message': otp_message}), 500
     return jsonify({
         'status':  'success',
-        'message': f'OTP sent to your phone.',
+        'message': otp_message,
         'data':    {'user_id': user.id, 'phone': user.phone},
     })
 
 
 # ── Reset Password ────────────────────────────────────────────────────
 @auth_bp.route('/reset-password', methods=['POST'])
+@limiter.limit("10 per 10 minutes")
 def reset_password():
     data         = request.get_json() or {}
     user_id      = data.get('user_id')
@@ -308,15 +579,21 @@ def reset_password():
         return jsonify({'status': 'error', 'message': 'user_id, otp_code and new_password required'}), 400
     if len(new_password) < 6:
         return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'}), 400
-    otp = OTP.query.filter_by(
-        user_id=user_id, code=otp_code, is_used=False, purpose='password_reset'
-    ).first()
+    otp = (
+        OTP.query
+        .filter_by(user_id=user_id, code=otp_code, is_used=False, purpose='password_reset')
+        .with_for_update()
+        .first()
+    )
     if not otp:
+        db.session.rollback()
         return jsonify({'status': 'error', 'message': 'Invalid OTP code'}), 400
     if datetime.utcnow() > otp.expires_at:
+        db.session.rollback()
         return jsonify({'status': 'error', 'message': 'OTP expired. Request a new one.'}), 400
     user = User.query.get(user_id)
     if not user:
+        db.session.rollback()
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
     user.set_password(new_password)
     otp.is_used = True

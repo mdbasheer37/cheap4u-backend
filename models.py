@@ -7,10 +7,16 @@
 # Everything else is identical to your original.
 
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timedelta
 import bcrypt
 
 db = SQLAlchemy()
+
+# PIN brute-force protection: after this many wrong attempts in a row,
+# the PIN is locked for this many minutes. Shared by login PIN and
+# transaction PIN (tracked separately per user).
+PIN_MAX_ATTEMPTS    = 5
+PIN_LOCKOUT_MINUTES = 5
 
 
 class User(db.Model):
@@ -37,6 +43,23 @@ class User(db.Model):
     virtual_bank_name       = db.Column(db.String(100), nullable=True)
     virtual_account_name    = db.Column(db.String(100), nullable=True)
     transaction_pin_hash    = db.Column(db.String(200), nullable=True)
+
+    # ── Login PIN (server-side — NEW) ──────────────────────────────
+    # Previously the "quick PIN" login was stored ONLY on-device
+    # (quick_pin.json in the app's local storage), so it vanished on
+    # reinstall / new phone / cleared app data. These columns make the
+    # backend the source of truth, exactly like transaction_pin_hash
+    # already was.
+    login_pin_hash                  = db.Column(db.String(200), nullable=True)
+    login_pin_set_at                = db.Column(db.DateTime, nullable=True)
+    login_pin_failed_attempts       = db.Column(db.Integer, default=0, nullable=False)
+    login_pin_locked_until          = db.Column(db.DateTime, nullable=True)
+
+    # ── Transaction PIN — added lockout/audit fields (hash already existed) ──
+    transaction_pin_set_at          = db.Column(db.DateTime, nullable=True)
+    transaction_pin_failed_attempts = db.Column(db.Integer, default=0, nullable=False)
+    transaction_pin_locked_until    = db.Column(db.DateTime, nullable=True)
+
     created_at              = db.Column(db.DateTime, default=datetime.utcnow)
     last_login              = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -51,6 +74,75 @@ class User(db.Model):
         return bcrypt.checkpw(
             password.encode('utf-8'), self.password_hash.encode('utf-8')
         )
+
+    # ── Login PIN helpers ────────────────────────────────────────────
+    def set_login_pin(self, pin):
+        self.login_pin_hash = bcrypt.hashpw(pin.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        self.login_pin_set_at = datetime.utcnow()
+        self.login_pin_failed_attempts = 0
+        self.login_pin_locked_until = None
+
+    def login_pin_lock_remaining(self):
+        """Seconds left on an active lockout, or 0 if not locked."""
+        if self.login_pin_locked_until and self.login_pin_locked_until > datetime.utcnow():
+            return int((self.login_pin_locked_until - datetime.utcnow()).total_seconds())
+        return 0
+
+    def check_login_pin(self, pin):
+        """
+        Verify `pin` against the stored hash, tracking failed attempts and
+        lockout. Returns one of: 'ok', 'locked', 'not_set', 'wrong'.
+        Caller is responsible for db.session.commit() afterwards.
+        """
+        if self.login_pin_locked_until and self.login_pin_locked_until > datetime.utcnow():
+            return 'locked'
+        if not self.login_pin_hash:
+            return 'not_set'
+        try:
+            matched = bcrypt.checkpw(pin.encode('utf-8'), self.login_pin_hash.encode('utf-8'))
+        except Exception:
+            matched = False
+        if matched:
+            self.login_pin_failed_attempts = 0
+            self.login_pin_locked_until = None
+            return 'ok'
+        self.login_pin_failed_attempts = (self.login_pin_failed_attempts or 0) + 1
+        if self.login_pin_failed_attempts >= PIN_MAX_ATTEMPTS:
+            self.login_pin_locked_until = datetime.utcnow() + timedelta(minutes=PIN_LOCKOUT_MINUTES)
+            self.login_pin_failed_attempts = 0
+        return 'wrong'
+
+    # ── Transaction PIN helpers ──────────────────────────────────────
+    def set_transaction_pin(self, pin):
+        self.transaction_pin_hash = bcrypt.hashpw(pin.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        self.transaction_pin_set_at = datetime.utcnow()
+        self.transaction_pin_failed_attempts = 0
+        self.transaction_pin_locked_until = None
+
+    def transaction_pin_lock_remaining(self):
+        if self.transaction_pin_locked_until and self.transaction_pin_locked_until > datetime.utcnow():
+            return int((self.transaction_pin_locked_until - datetime.utcnow()).total_seconds())
+        return 0
+
+    def check_transaction_pin(self, pin):
+        """Same semantics as check_login_pin(), for the transaction PIN."""
+        if self.transaction_pin_locked_until and self.transaction_pin_locked_until > datetime.utcnow():
+            return 'locked'
+        if not self.transaction_pin_hash:
+            return 'not_set'
+        try:
+            matched = bcrypt.checkpw(pin.encode('utf-8'), self.transaction_pin_hash.encode('utf-8'))
+        except Exception:
+            matched = False
+        if matched:
+            self.transaction_pin_failed_attempts = 0
+            self.transaction_pin_locked_until = None
+            return 'ok'
+        self.transaction_pin_failed_attempts = (self.transaction_pin_failed_attempts or 0) + 1
+        if self.transaction_pin_failed_attempts >= PIN_MAX_ATTEMPTS:
+            self.transaction_pin_locked_until = datetime.utcnow() + timedelta(minutes=PIN_LOCKOUT_MINUTES)
+            self.transaction_pin_failed_attempts = 0
+        return 'wrong'
 
     def to_dict(self):
         return {
@@ -71,6 +163,11 @@ class User(db.Model):
             'virtual_account_name':   self.virtual_account_name,
             'joined_date':            self.created_at.strftime('%Y-%m-%d'),
             'last_login':             self.last_login.strftime('%Y-%m-%d %H:%M:%S') if self.last_login else None,
+            # NEW: server-side PIN state. The frontend must use these — not
+            # whether a local PIN file exists on the device — to decide
+            # whether to show "Create PIN" or skip straight to normal login.
+            'login_pin_set':          bool(self.login_pin_hash),
+            'transaction_pin_set':    bool(self.transaction_pin_hash),
         }
 
 
@@ -115,6 +212,11 @@ class OTP(db.Model):
     is_used    = db.Column(db.Boolean, default=False)
     expires_at = db.Column(db.DateTime, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # NEW: Termii's message_id for the SMS that carried this OTP, when
+    # Termii's response included one. Lets support staff trace a specific
+    # OTP back to a specific Termii send without ever logging the code
+    # itself in plaintext logs long-term.
+    provider_message_id = db.Column(db.String(100), nullable=True)
 
 
 class Referral(db.Model):

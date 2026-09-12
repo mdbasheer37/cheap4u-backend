@@ -4,7 +4,6 @@
 # Drop this file in the same folder as app.py, cheapdatahub.py, and vtunaija.py.
 
 import logging
-import bcrypt
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, User, Transaction
@@ -33,13 +32,25 @@ def _get_user():
 
 
 def _verify_pin(user, pin):
-    """Return True if the supplied PIN matches the user's stored PIN hash."""
-    if not pin or not user.transaction_pin_hash:
-        return False
-    try:
-        return bcrypt.checkpw(pin.encode('utf-8'), user.transaction_pin_hash.encode('utf-8'))
-    except Exception:
-        return False
+    """
+    Verify the transaction PIN server-side (never trust a frontend
+    'pin_verified' flag). Returns (ok: bool, error_message: str|None).
+    Also enforces the lockout tracked on the User row, shared with
+    /api/auth/verify-pin and /api/auth/set-pin.
+    """
+    if not pin:
+        return False, 'PIN is required'
+    result = user.check_transaction_pin(pin)
+    db.session.commit()
+    if result == 'ok':
+        return True, None
+    if result == 'locked':
+        remaining = user.transaction_pin_lock_remaining()
+        minutes = max(1, remaining // 60)
+        return False, f'Too many incorrect attempts. Try again in {minutes} minute(s).'
+    if result == 'not_set':
+        return False, 'No transaction PIN set. Please set one first.'
+    return False, 'Incorrect transaction PIN'
 
 
 # ─── AIRTIME ──────────────────────────────────────────────────────────────────
@@ -67,9 +78,10 @@ def airtime():
         return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
 
     # Validate PIN
-    if not _verify_pin(user, pin):
-        logger.warning(f"[Airtime] Wrong PIN — user {user.id}")
-        return jsonify({'status': 'error', 'message': 'Incorrect transaction PIN'}), 401
+    pin_ok, pin_err = _verify_pin(user, pin)
+    if not pin_ok:
+        logger.warning(f"[Airtime] PIN check failed — user {user.id}: {pin_err}")
+        return jsonify({'status': 'error', 'message': pin_err}), 401
 
     # Basic field validation (detailed validation happens inside buy_airtime too)
     if network not in ('MTN', 'Airtel', 'Glo', '9Mobile'):
@@ -106,9 +118,10 @@ def data_purchase():
     pin     = (data.get('pin') or '').strip()
     coupon_code = (data.get('coupon_code') or '').strip() or None
 
-    if not _verify_pin(user, pin):
-        logger.warning(f"[Data] Wrong PIN — user {user.id}")
-        return jsonify({'status': 'error', 'message': 'Incorrect transaction PIN'}), 401
+    pin_ok, pin_err = _verify_pin(user, pin)
+    if not pin_ok:
+        logger.warning(f"[Data] PIN check failed — user {user.id}: {pin_err}")
+        return jsonify({'status': 'error', 'message': pin_err}), 401
 
     if not plan_id:
         return jsonify({'status': 'error', 'message': 'plan_id is required'}), 400
@@ -149,9 +162,10 @@ def electricity():
     except (TypeError, ValueError):
         return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
 
-    if not _verify_pin(user, pin):
-        logger.warning(f"[Electricity] Wrong PIN — user {user.id}")
-        return jsonify({'status': 'error', 'message': 'Incorrect transaction PIN'}), 401
+    pin_ok, pin_err = _verify_pin(user, pin)
+    if not pin_ok:
+        logger.warning(f"[Electricity] PIN check failed — user {user.id}: {pin_err}")
+        return jsonify({'status': 'error', 'message': pin_err}), 401
 
     if not disco:
         return jsonify({'status': 'error', 'message': 'disco (electricity company) is required'}), 400
@@ -191,9 +205,10 @@ def cable_tv():
     pin       = (data.get('pin') or '').strip()
     coupon_code = (data.get('coupon_code') or '').strip() or None
 
-    if not _verify_pin(user, pin):
-        logger.warning(f"[CableTV] Wrong PIN — user {user.id}")
-        return jsonify({'status': 'error', 'message': 'Incorrect transaction PIN'}), 401
+    pin_ok, pin_err = _verify_pin(user, pin)
+    if not pin_ok:
+        logger.warning(f"[CableTV] PIN check failed — user {user.id}: {pin_err}")
+        return jsonify({'status': 'error', 'message': pin_err}), 401
 
     if not plan_id:
         return jsonify({'status': 'error', 'message': 'plan_id is required'}), 400
@@ -232,9 +247,10 @@ def exam_pins():
     except (TypeError, ValueError):
         return jsonify({'status': 'error', 'message': 'Invalid quantity'}), 400
 
-    if not _verify_pin(user, pin):
-        logger.warning(f"[ExamPIN] Wrong PIN — user {user.id}")
-        return jsonify({'status': 'error', 'message': 'Incorrect transaction PIN'}), 401
+    pin_ok, pin_err = _verify_pin(user, pin)
+    if not pin_ok:
+        logger.warning(f"[ExamPIN] PIN check failed — user {user.id}: {pin_err}")
+        return jsonify({'status': 'error', 'message': pin_err}), 401
 
     if exam_type not in ('WAEC', 'NECO', 'NABTEB', 'JAMB'):
         return jsonify({'status': 'error',

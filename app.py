@@ -216,6 +216,44 @@ def create_app():
             logger.error(f'add_plan_type_column error: {e}')
             return jsonify({'status': 'error', 'message': str(e)}), 500
 
+    @app.route('/api/debug/add-pin-columns', methods=['GET'])
+    def add_pin_columns():
+        """
+        ONE-TIME MIGRATION: adds the server-side Login PIN columns (and
+        lockout/audit columns for both PIN types) to the existing `users`
+        table, plus the Termii message_id column on `otps`.
+
+        db.create_all() only creates tables that don't exist yet — it never
+        ALTERs an existing table — so this has to be run manually once after
+        deploying the PIN-persistence changes. Visit this URL once (GET
+        request) after deploying; it's idempotent (IF NOT EXISTS) and safe
+        to call repeatedly. Existing users/rows are untouched — every new
+        column is nullable or defaults to 0, so no existing data is reset.
+        """
+        from sqlalchemy import text
+        try:
+            with db.engine.connect() as conn:
+                statements = [
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_hash VARCHAR(200)",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_set_at TIMESTAMP",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_failed_attempts INTEGER NOT NULL DEFAULT 0",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_locked_until TIMESTAMP",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_set_at TIMESTAMP",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_failed_attempts INTEGER NOT NULL DEFAULT 0",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_locked_until TIMESTAMP",
+                    "ALTER TABLE otps ADD COLUMN IF NOT EXISTS provider_message_id VARCHAR(100)",
+                ]
+                for stmt in statements:
+                    conn.execute(text(stmt))
+                conn.commit()
+            return jsonify({
+                'status': 'success',
+                'message': 'PIN columns added (or already existed). Existing users/PINs untouched.'
+            })
+        except Exception as e:
+            logger.error(f'add_pin_columns error: {e}')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
     @app.route('/api/debug/fix-referral-bonus', methods=['GET'])   
     def fix_referral_bonus():
         """
