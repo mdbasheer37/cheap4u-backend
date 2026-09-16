@@ -122,14 +122,17 @@ def send_sms(phone, message):
     webhook configured on the Termii dashboard, which this account does not
     currently have wired up — see the note at the bottom of this function).
 
-    Channel order — this is the actual fix for "works in the day, not at
-    night": the previous version tried the 'number' channel first, which is
-    NOT a DND-bypass channel. A large share of Nigerian numbers are
-    registered on the NCC's Do-Not-Disturb list, and non-bypass routes get
-    throttled/blocked by carriers more aggressively during certain hours
-    (this shows up exactly as "sometimes doesn't arrive at night"). Termii's
-    'dnd' channel is the one designed to bypass that filtering for
-    transactional messages like OTPs, so it's tried first now.
+    Channel order — dnd is tried first because it's the channel designed to
+    bypass Nigeria's DND filtering for transactional messages like OTPs
+    (the actual fix for "works in the day, not at night", once this
+    account's DND route is activated — see the account-setup note at the
+    bottom of this function, because right now it isn't, and dnd/generic
+    all fail on this account until that's resolved). 'number' is kept as
+    the final fallback because it's the one channel that works today
+    without any sender-ID approval — restored after being dropped
+    entirely in an earlier version of this fix, which broke OTP sending
+    completely for this account rather than just being unreliable at
+    night.
 
     Each fallback below only fires if the previous attempt was rejected
     outright by Termii (bad sender, no channel access, etc.) — never for an
@@ -160,15 +163,29 @@ def send_sms(phone, message):
     if result2["sent"]:
         return True, result2["message_id"], None
 
-    # Attempt 3: last resort — generic channel, Termii's own number, no sender ID.
+    # Attempt 3: generic channel, Termii's shared sender.
     result3 = _termii_attempt(api_key, phone_intl, message, channel="generic", sender="N-Alert")
     if result3["sent"]:
         return True, result3["message_id"], None
 
+    # Attempt 4: 'number' channel — sends from a Termii-owned number instead
+    # of a sender ID, so it needs no sender approval at all. This was the
+    # ORIGINAL first-choice channel before the dnd-first change above, and
+    # logs confirm it's the one this account can actually use today (the
+    # dnd route isn't activated on this workspace yet, and neither our own
+    # sender ID nor Termii's shared 'N-Alert' is approved here — see the
+    # account-setup note below). Kept as the last attempt, after the better
+    # long-term options, so the moment DND/sender approval comes through on
+    # this account, this fallback simply stops being needed.
+    result4 = _termii_attempt(api_key, phone_intl, message, channel="number")
+    if result4["sent"]:
+        return True, result4["message_id"], None
+
     logger.error(
         f"All Termii send attempts failed → {phone_intl}. "
         f"Errors: dnd/{custom_sender}={result['error']!r}, "
-        f"dnd/N-Alert={result2['error']!r}, generic/N-Alert={result3['error']!r}"
+        f"dnd/N-Alert={result2['error']!r}, generic/N-Alert={result3['error']!r}, "
+        f"number={result4['error']!r}"
     )
     return False, None, "Could not send SMS at this time"
 
@@ -183,3 +200,20 @@ def send_sms(phone, message):
     # necessarily reports "accepted by Termii", and the user-facing message
     # in auth.py is worded to reflect that honestly rather than promising
     # delivery it can't confirm.
+
+    # NOTE (account setup — this is the actual fix for night-time OTP
+    # reliability, not something this code can do on its own): live logs
+    # from this account show BOTH of the following are currently true on
+    # the Termii dashboard for this workspace:
+    #   1. The DND route is not activated ("Route not configured for
+    #      workspace... Contact platform support" on the dnd channel).
+    #   2. No sender ID is approved at all — not the custom "Cheap4uApp" ID,
+    #      not even Termii's shared "N-Alert" default ("SENDER_ID_NOT_APPROVED").
+    # Until both of those are resolved on Termii's side, every attempt above
+    # except the final 'number' fallback will keep failing, and 'number' is
+    # the one channel Termii itself warns is subject to Nigeria's DND/MTN
+    # time restrictions - i.e. the exact night-unreliability this whole fix
+    # was for. To actually fix it: log into the Termii dashboard, submit a
+    # sender ID for approval under Sender ID settings, and contact Termii
+    # support to activate the DND route for this workspace. There is no
+    # code-side workaround for an unprovisioned account.
