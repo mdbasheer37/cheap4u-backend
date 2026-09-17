@@ -46,9 +46,11 @@ def leaderboard():
             'total_participants': len(board),
             'leaderboard':        board,
             'rewards': {
-                'first_place_percent': cfg.first_place_percent,
-                'second_place_bonus':  cfg.second_place_bonus,
-                'third_place_bonus':   cfg.third_place_bonus,
+                'rank1_percent': cfg.rank1_percent,
+                'rank2_percent': cfg.rank2_percent,
+                'rank3_percent': cfg.rank3_percent,
+                'rank4_percent': cfg.rank4_percent,
+                'rank5_percent': cfg.rank5_percent,
             },
         },
     })
@@ -113,7 +115,7 @@ def update_config():
 
     if 'is_enabled' in data:
         cfg.is_enabled = bool(data['is_enabled'])
-    for field in ('first_place_percent', 'second_place_bonus', 'third_place_bonus', 'min_qualifying_amount'):
+    for field in ('rank1_percent', 'rank2_percent', 'rank3_percent', 'rank4_percent', 'rank5_percent', 'min_qualifying_amount'):
         if field in data:
             try:
                 setattr(cfg, field, float(data[field]))

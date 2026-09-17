@@ -20,11 +20,15 @@ class ChallengeConfig(db.Model):
     id                     = db.Column(db.Integer, primary_key=True)
     is_enabled             = db.Column(db.Boolean, default=True)
 
-    # 🥇 1st place reward = this % of the winner's total monthly purchases
-    first_place_percent    = db.Column(db.Float, default=50.0)
-    # 🥈 / 🥉 fixed wallet bonuses
-    second_place_bonus     = db.Column(db.Float, default=10000.0)
-    third_place_bonus      = db.Column(db.Float, default=5000.0)
+    # Reward for each of the Top 5 ranks, as a percentage of THAT winner's
+    # own total monthly purchase volume (not a shared pool, not a fixed
+    # Naira amount) — rank1 gets rank1_percent% of their own spend back,
+    # rank2 gets rank2_percent% of their own spend back, and so on.
+    rank1_percent          = db.Column(db.Float, default=10.0)
+    rank2_percent          = db.Column(db.Float, default=8.0)
+    rank3_percent          = db.Column(db.Float, default=6.0)
+    rank4_percent          = db.Column(db.Float, default=4.0)
+    rank5_percent          = db.Column(db.Float, default=2.0)
 
     # Optional floor — a user must have spent at least this much in the
     # month to be eligible for a reward (0 = no minimum).
@@ -39,9 +43,11 @@ class ChallengeConfig(db.Model):
     def to_dict(self):
         return {
             'is_enabled':            self.is_enabled,
-            'first_place_percent':   self.first_place_percent,
-            'second_place_bonus':    self.second_place_bonus,
-            'third_place_bonus':     self.third_place_bonus,
+            'rank1_percent':         self.rank1_percent,
+            'rank2_percent':         self.rank2_percent,
+            'rank3_percent':         self.rank3_percent,
+            'rank4_percent':         self.rank4_percent,
+            'rank5_percent':         self.rank5_percent,
             'min_qualifying_amount': self.min_qualifying_amount,
             'last_processed_month':  self.last_processed_month,
         }
@@ -90,7 +96,7 @@ class ChallengeWinner(db.Model):
     user_name      = db.Column(db.String(100))                      # snapshot at win-time
     total_amount   = db.Column(db.Float, default=0.0)
     reward_amount  = db.Column(db.Float, default=0.0)
-    reward_type    = db.Column(db.String(20))                       # 'cashback' | 'bonus'
+    reward_type    = db.Column(db.String(20))                       # always 'cashback' now — all 5 ranks are % of own spend
     credited       = db.Column(db.Boolean, default=False)
     credited_at    = db.Column(db.DateTime, nullable=True)
     created_at     = db.Column(db.DateTime, default=datetime.utcnow)

@@ -216,6 +216,45 @@ def create_app():
             logger.error(f'add_plan_type_column error: {e}')
             return jsonify({'status': 'error', 'message': str(e)}), 500
 
+    @app.route('/api/debug/add-challenge-percent-columns', methods=['GET'])
+    def add_challenge_percent_columns():
+        """
+        ONE-TIME MIGRATION: adds the Top-5 percentage-reward columns to the
+        existing `challenge_config` singleton row, replacing the old
+        first_place_percent / second_place_bonus / third_place_bonus
+        scheme (Top 3 only, mixed % + fixed-Naira) with a clean Top-5,
+        all-percentage scheme (each rank keeps a % of their OWN spend).
+
+        Visit this URL once (GET request) after deploying; it's idempotent
+        (IF NOT EXISTS) and safe to call repeatedly. The DEFAULT values
+        below (10/8/6/4/2) are what the existing config row will be
+        back-filled with the moment this runs — matching the rates
+        actually requested for this change — so no separate data-fix step
+        is needed. The old columns are left in place, unused, rather than
+        dropped, to avoid any risk of a destructive DROP COLUMN.
+        """
+        from sqlalchemy import text
+        try:
+            with db.engine.connect() as conn:
+                statements = [
+                    "ALTER TABLE challenge_config ADD COLUMN IF NOT EXISTS rank1_percent FLOAT DEFAULT 10.0",
+                    "ALTER TABLE challenge_config ADD COLUMN IF NOT EXISTS rank2_percent FLOAT DEFAULT 8.0",
+                    "ALTER TABLE challenge_config ADD COLUMN IF NOT EXISTS rank3_percent FLOAT DEFAULT 6.0",
+                    "ALTER TABLE challenge_config ADD COLUMN IF NOT EXISTS rank4_percent FLOAT DEFAULT 4.0",
+                    "ALTER TABLE challenge_config ADD COLUMN IF NOT EXISTS rank5_percent FLOAT DEFAULT 2.0",
+                ]
+                for stmt in statements:
+                    conn.execute(text(stmt))
+                conn.commit()
+            return jsonify({
+                'status': 'success',
+                'message': 'Challenge percent columns added (or already existed): '
+                           'rank1=10%, rank2=8%, rank3=6%, rank4=4%, rank5=2%.'
+            })
+        except Exception as e:
+            logger.error(f'add_challenge_percent_columns error: {e}')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
     @app.route('/api/debug/add-pin-columns', methods=['GET'])
     def add_pin_columns():
         """

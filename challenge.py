@@ -91,7 +91,7 @@ def _notify(user_id, ntype, title, message):
     ))
 
 
-def _maybe_notify_rank_change(entry, old_rank, new_rank):
+def _maybe_notify_rank_change(entry, old_rank, new_rank, cfg):
     """Fires the '#1' / 'Top 3' / 'Top 10' push notifications the first
     time a user crosses into that band. Scoped to the user who just made
     the purchase — other users' ranks may also shift, but re-evaluating
@@ -104,7 +104,8 @@ def _maybe_notify_rank_change(entry, old_rank, new_rank):
 
     if new_rank == 1 and entry.last_notified_rank != 1:
         _notify(entry.user_id, 'first_place', "You're #1!",
-                "You're now leading the Monthly Champion Challenge! Stay on top to win 50% cashback on your total spend.")
+                f"You're now leading the Monthly Champion Challenge! Stay on top to win "
+                f"{cfg.rank1_percent:.0f}% cashback on your total spend.")
     elif new_rank <= 3 and (old_rank is None or old_rank > 3):
         _notify(entry.user_id, 'top3', "You made Top 3!",
                 f"You've entered the Top 3 of the Monthly Champion Challenge at Rank #{new_rank}.")
@@ -163,7 +164,7 @@ def record_purchase(transaction):
         db.session.flush()
 
         new_rank = _rank_of(transaction.user_id, _ordered_entries(month))
-        _maybe_notify_rank_change(entry, old_rank, new_rank)
+        _maybe_notify_rank_change(entry, old_rank, new_rank, cfg)
 
     except Exception:
         logger.exception('challenge.record_purchase failed (non-fatal)')
@@ -178,7 +179,7 @@ def get_leaderboard(month=None, limit=100):
         return [], month
 
     leader_total = ordered[0].total_amount or 0.0
-    reward_labels = {1: '1st Place', 2: '2nd Place', 3: '3rd Place'}
+    reward_labels = {1: '1st Place', 2: '2nd Place', 3: '3rd Place', 4: '4th Place', 5: '5th Place'}
 
     board = []
     for idx, e in enumerate(ordered[:limit], start=1):
@@ -213,7 +214,7 @@ def get_user_summary(user_id, month=None):
     elif rank == 1:
         amount_to_overtake_next = 0.0
 
-    reward_labels = {1: '1st Place', 2: '2nd Place', 3: '3rd Place'}
+    reward_labels = {1: '1st Place', 2: '2nd Place', 3: '3rd Place', 4: '4th Place', 5: '5th Place'}
     cfg = get_config()
 
     return {
@@ -316,22 +317,25 @@ def process_month_end(month_key=None, force=False):
 
     winners_created = []
     if cfg.is_enabled:
+        # Top 5, each rewarded with a percentage of THEIR OWN monthly
+        # purchase total — rank1 keeps rank1_percent% of what they spent,
+        # rank2 keeps rank2_percent%, and so on. Nobody's reward depends on
+        # anyone else's spend; there's no shared pool to split.
         rewards = [
-            (1, cfg.first_place_percent, 'cashback'),
-            (2, cfg.second_place_bonus, 'bonus'),
-            (3, cfg.third_place_bonus, 'bonus'),
+            (1, cfg.rank1_percent),
+            (2, cfg.rank2_percent),
+            (3, cfg.rank3_percent),
+            (4, cfg.rank4_percent),
+            (5, cfg.rank5_percent),
         ]
-        for rank, reward_value, reward_type in rewards:
+        for rank, percent in rewards:
             if len(ordered) < rank:
                 continue
             entry = ordered[rank - 1]
             if entry.total_amount < (cfg.min_qualifying_amount or 0):
                 continue
 
-            reward_amount = (
-                round(entry.total_amount * (reward_value / 100.0), 2)
-                if reward_type == 'cashback' else round(reward_value, 2)
-            )
+            reward_amount = round(entry.total_amount * ((percent or 0) / 100.0), 2)
             user = User.query.get(entry.user_id)
             if not user:
                 continue
@@ -339,7 +343,7 @@ def process_month_end(month_key=None, force=False):
             winner_row = ChallengeWinner(
                 month=month_key, rank=rank, user_id=user.id, user_name=user.name,
                 total_amount=entry.total_amount, reward_amount=reward_amount,
-                reward_type=reward_type, credited=False,
+                reward_type='cashback', credited=False,
             )
             db.session.add(winner_row)
             db.session.flush()
