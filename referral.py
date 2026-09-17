@@ -45,6 +45,16 @@ def get_referral_info():
     can_use_bonus   = user.referral_balance >= 200
     next_threshold  = max(0, 200 - user.referral_balance)
 
+    # FIX: this used to be "https://cheap4u.technology/register?ref=...",
+    # a domain that isn't registered/doesn't resolve, with no /register
+    # route anywhere in this backend to handle it even if it did. Anyone
+    # without the app already installed — the entire point of a referral
+    # link — got a dead link. Points at the real Play Store listing now.
+    # NOTE: this doesn't auto-fill the referral code on install (that
+    # needs the Play Install Referrer API wired up on the Android side,
+    # which this project doesn't have) — the referral code still has to
+    # be typed into the optional field on the registration screen. The
+    # frontend's share message spells this out explicitly for that reason.
     return jsonify({
         'status': 'success',
         'data': {
@@ -53,7 +63,7 @@ def get_referral_info():
             'total_referrals':        total_referrals,
             'pending_referrals_count': pending_referrals,
             'referral_code':          user.referral_code,
-            'referral_link':          f"https://cheap4u.technology/register?ref={user.referral_code}",
+            'referral_link':          "https://play.google.com/store/apps/details?id=com.cheap4u",
             'can_use_bonus':          can_use_bonus,
             'next_bonus_threshold':   round(next_threshold, 2),
         }
@@ -195,7 +205,7 @@ def referral_stats():
             'total_earnings':      round(user.referral_earnings, 2),
             'referral_balance':    round(user.referral_balance, 2),
             'referral_code':       user.referral_code,
-            'referral_link':       f"https://cheap4u.technology/register?ref={user.referral_code}",
+            'referral_link':       "https://play.google.com/store/apps/details?id=com.cheap4u",
         }
     })
 
