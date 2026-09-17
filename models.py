@@ -7,6 +7,7 @@
 # Everything else is identical to your original.
 
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.ext.mutable import MutableDict
 from datetime import datetime, timedelta
 import bcrypt
 
@@ -181,7 +182,19 @@ class Transaction(db.Model):
     amount       = db.Column(db.Float, nullable=False)
     profit       = db.Column(db.Float, default=0.0)
     status       = db.Column(db.String(20), default='pending')
-    details      = db.Column(db.JSON, default=dict)
+    # MutableDict wrapper: without this, SQLAlchemy has no way to notice
+    # in-place changes like transaction.details.update({...}) or
+    # transaction.details["error"] = x — every purchase function (airtime,
+    # data, electricity, cable, exam pins, AirtimeToCash) does exactly that
+    # AFTER the initial insert, to add the token/api_reference/cost_price/
+    # error once the provider responds. Without this wrapper, none of that
+    # ever actually reached the database: the transaction still correctly
+    # shows "success" (status is a separate, properly-tracked column), but
+    # looking up an old transaction later — e.g. a customer needing to
+    # re-check an electricity token — would find it missing. This one
+    # change fixes it everywhere `.details` is mutated, with no other file
+    # needing to change.
+    details      = db.Column(MutableDict.as_mutable(db.JSON), default=dict)
     created_at   = db.Column(db.DateTime, default=datetime.utcnow)
 
     user = db.relationship('User', backref='transactions')

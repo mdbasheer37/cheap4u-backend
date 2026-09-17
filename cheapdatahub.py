@@ -33,6 +33,13 @@ PROFIT_MARGINS = {
 }
 
 # ── Electricity disco name → ID mapping (from CheapDataHub dashboard) ─────────
+# NOTE: the frontend's disco-selection screen sends the plain display name
+# (e.g. "Abuja Electric", not "Abuja Electric AEDC") as the exact string
+# stored in self.selected_electricity_provider — this dict does an exact
+# (case-sensitive) match, so every name the frontend can actually send has
+# to be a key here. "Abuja Electric" and "Jos Electric" were missing
+# entirely (only the longer official names were), so choosing either of
+# those two discos failed outright with "Unknown electricity provider".
 DISCO_ID_MAP = {
     "Ikeja Electric":          1,
     "IKEDC":                   1,
@@ -43,12 +50,14 @@ DISCO_ID_MAP = {
     "Enugu Electric":          4,
     "EEDC":                    4,
     "Abuja Electric AEDC":     5,
+    "Abuja Electric":          5,   # FIX: matches the name the frontend actually sends
     "AEDC":                    5,
     "Kaduna Electric":         6,
     "KEDCO":                   6,
     "Port Harcourt Electric":  7,
     "PHED":                    7,
     "Jos Electricity JEDplc":  8,
+    "Jos Electric":            8,   # FIX: matches the name the frontend actually sends
     "JED":                     8,
     "Kano Electric":           9,
     "KEDCO Kano":              9,
@@ -303,6 +312,17 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email, 
 
     # FIX: Convert disco name to disco_id (API requires integer, not name)
     disco_id = DISCO_ID_MAP.get(disco)
+    if not disco_id:
+        # Fall back to a case/whitespace-insensitive match before giving up —
+        # this is what actually failed for "Abuja Electric"/"Jos Electric"
+        # above; keeping this fallback means a future naming tweak on either
+        # side (frontend display name vs this map) degrades gracefully
+        # instead of hard-failing the purchase again.
+        normalized = disco.strip().lower()
+        for name, id_ in DISCO_ID_MAP.items():
+            if name.strip().lower() == normalized:
+                disco_id = id_
+                break
     if not disco_id:
         # Try to use as integer directly if already an ID
         try:
