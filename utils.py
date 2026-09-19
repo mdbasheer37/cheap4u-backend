@@ -113,6 +113,48 @@ def _termii_attempt(api_key, phone_intl, message, channel, sender=None, timeout=
         return {"sent": False, "message_id": None, "raw_message": None, "error": str(e)}
 
 
+def _termii_number_send(api_key, phone_intl, message, timeout=15):
+    """
+    Termii's "Number API" — a SEPARATE endpoint from the one used above, not
+    a channel value on it. Auto-assigns a local-looking sending number per
+    country, so unlike dnd/generic it needs no sender-ID approval or route
+    activation. Payload is deliberately minimal: no 'from', no 'type', no
+    'channel' — sending those extra fields to THIS endpoint is what caused
+    "One or more fields failed validation" when this used to (incorrectly)
+    call /api/sms/send with channel="number", which was never a valid
+    channel value there (only "generic"/"dnd" are).
+    """
+    payload = {"api_key": api_key, "to": phone_intl, "sms": message}
+    try:
+        r = requests.post(
+            "https://api.ng.termii.com/api/sms/number/send",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=timeout,
+        )
+        try:
+            data = r.json()
+        except Exception:
+            data = {}
+        logger.info(
+            f"Termii [number-api] → {phone_intl}: http={r.status_code} "
+            f"termii_message={data.get('message')!r} message_id={data.get('message_id')!r}"
+        )
+        sent = (r.status_code == 200 and data.get("message") == "Successfully Sent")
+        return {
+            "sent": sent,
+            "message_id": data.get("message_id"),
+            "raw_message": data.get("message"),
+            "error": None if sent else (data.get("message") or f"HTTP {r.status_code}"),
+        }
+    except requests.exceptions.Timeout:
+        logger.error(f"Termii [number-api] timed out after {timeout}s → {phone_intl}")
+        return {"sent": False, "message_id": None, "raw_message": None, "error": "timeout"}
+    except Exception as e:
+        logger.error(f"Termii [number-api] exception → {phone_intl}: {e}")
+        return {"sent": False, "message_id": None, "raw_message": None, "error": str(e)}
+
+
 def send_sms(phone, message):
     """
     Send an SMS via Termii. Returns (sent: bool, message_id: str|None,
@@ -168,16 +210,12 @@ def send_sms(phone, message):
     if result3["sent"]:
         return True, result3["message_id"], None
 
-    # Attempt 4: 'number' channel — sends from a Termii-owned number instead
-    # of a sender ID, so it needs no sender approval at all. This was the
-    # ORIGINAL first-choice channel before the dnd-first change above, and
-    # logs confirm it's the one this account can actually use today (the
-    # dnd route isn't activated on this workspace yet, and neither our own
-    # sender ID nor Termii's shared 'N-Alert' is approved here — see the
-    # account-setup note below). Kept as the last attempt, after the better
-    # long-term options, so the moment DND/sender approval comes through on
-    # this account, this fallback simply stops being needed.
-    result4 = _termii_attempt(api_key, phone_intl, message, channel="number")
+    # Attempt 4: Termii's Number API — a genuinely separate endpoint (see
+    # _termii_number_send's docstring for why the old channel="number" call
+    # to /api/sms/send always failed validation). No sender-ID/route
+    # approval needed, so this is the one that can actually work today on
+    # an account with neither set up yet.
+    result4 = _termii_number_send(api_key, phone_intl, message)
     if result4["sent"]:
         return True, result4["message_id"], None
 
@@ -201,19 +239,23 @@ def send_sms(phone, message):
     # in auth.py is worded to reflect that honestly rather than promising
     # delivery it can't confirm.
 
-    # NOTE (account setup — this is the actual fix for night-time OTP
-    # reliability, not something this code can do on its own): live logs
-    # from this account show BOTH of the following are currently true on
-    # the Termii dashboard for this workspace:
+    # NOTE (account setup — the real fix for night-time OTP reliability
+    # long-term, not something this code can do alone): live logs from this
+    # account show BOTH of the following are currently true on the Termii
+    # dashboard for this workspace:
     #   1. The DND route is not activated ("Route not configured for
     #      workspace... Contact platform support" on the dnd channel).
     #   2. No sender ID is approved at all — not the custom "Cheap4uApp" ID,
     #      not even Termii's shared "N-Alert" default ("SENDER_ID_NOT_APPROVED").
-    # Until both of those are resolved on Termii's side, every attempt above
-    # except the final 'number' fallback will keep failing, and 'number' is
-    # the one channel Termii itself warns is subject to Nigeria's DND/MTN
-    # time restrictions - i.e. the exact night-unreliability this whole fix
-    # was for. To actually fix it: log into the Termii dashboard, submit a
-    # sender ID for approval under Sender ID settings, and contact Termii
-    # support to activate the DND route for this workspace. There is no
-    # code-side workaround for an unprovisioned account.
+    # The Number API fallback above doesn't need either of those (no sender
+    # ID, no route), so it should get OTPs flowing again immediately. I
+    # don't have confirmed data on whether the Number API is itself subject
+    # to the same night-time DND filtering the dnd/generic channels are —
+    # it uses a plain numeric sending number rather than a branded sender
+    # ID, which is typically what triggers DND filtering in Nigeria, so
+    # it plausibly holds up better, but that's not something to take on
+    # faith. Getting a sender ID approved and the DND route activated is
+    # still the properly-supported, Termii-recommended path for OTPs —
+    # worth doing regardless of whether attempt 4 turns out reliable
+    # around the clock. There is no code-side substitute for that account
+    # setup; log into the Termii dashboard to action both.

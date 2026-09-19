@@ -91,44 +91,60 @@ def _send_otp(user, purpose='registration'):
     return sms_sent, otp_code, user_message
 
 
+def _setup_paystack_sync(user_id, name, email, phone):
+    """
+    Creates the Paystack customer + Dedicated Virtual Account for a user,
+    synchronously, in the CALLING request/thread. Returns True if a DVA now
+    exists for this user (either just created, or already existed), False
+    if it genuinely couldn't be created (Paystack down, DVA feature not
+    enabled on this account, etc.) — never raises, so a Paystack hiccup
+    never blocks the caller.
+    """
+    try:
+        from payment import create_paystack_customer, create_dedicated_virtual_account
+        u = User.query.get(user_id)
+        if not u:
+            return False
+        if u.virtual_account_number:
+            return True   # already has one — nothing to do
+        if not u.paystack_customer_code:
+            name_parts = name.strip().split(' ', 1)
+            first_name = name_parts[0]
+            last_name  = name_parts[1] if len(name_parts) > 1 else ''
+            u.paystack_customer_code = create_paystack_customer(email, first_name, last_name, phone)
+            db.session.commit()
+            logger.info(f'Paystack customer created for user {user_id}')
+
+        dva = create_dedicated_virtual_account(u.paystack_customer_code)
+        if dva:
+            u.virtual_account_number = dva['account_number']
+            u.virtual_bank_name      = dva['bank_name']
+            u.virtual_account_name   = dva['account_name']
+            db.session.commit()
+            logger.info(f'DVA created for user {user_id}: {dva["bank_name"]} {dva["account_number"]}')
+            return True
+        logger.warning(f'DVA not available for user {user_id}')
+        return False
+    except Exception as e:
+        logger.error(f'Paystack setup error for user {user_id}: {e}')
+        return False
+
+
 def _setup_paystack_background(app, user_id, name, email, phone):
     """
-    Create Paystack customer + DVA in background thread.
-    FIX: captures app object BEFORE starting thread, uses explicit app_context inside.
+    Fallback path only — retries Paystack customer + DVA creation in a
+    background thread. Used at /login when a user somehow still doesn't
+    have a DVA (e.g. it failed synchronously at registration because
+    Paystack was briefly down). Registration itself now calls
+    _setup_paystack_sync() directly instead of this, specifically so the
+    account number is ready immediately in the registration response
+    rather than the user having to wait/reopen the app to see it.
     """
     import threading
 
     def _run():
         with app.app_context():
-            try:
-                from payment import create_paystack_customer, create_dedicated_virtual_account
-                u = User.query.get(user_id)
-                if not u or u.paystack_customer_code:
-                    return
-
-                name_parts = name.strip().split(' ', 1)
-                first_name = name_parts[0]
-                last_name  = name_parts[1] if len(name_parts) > 1 else ''
-
-                customer_code = create_paystack_customer(email, first_name, last_name, phone)
-                u.paystack_customer_code = customer_code
-                db.session.commit()
-                app.logger.info(f'Paystack customer created for user {user_id}')
-
-                dva = create_dedicated_virtual_account(customer_code)
-                if dva:
-                    u.virtual_account_number = dva['account_number']
-                    u.virtual_bank_name      = dva['bank_name']
-                    u.virtual_account_name   = dva['account_name']
-                    db.session.commit()
-                    app.logger.info(
-                        f'DVA created for user {user_id}: '
-                        f'{dva["bank_name"]} {dva["account_number"]}'
-                    )
-                else:
-                    app.logger.warning(f'DVA not available for user {user_id}')
-            except Exception as e:
-                app.logger.error(f'Paystack setup error for user {user_id}: {e}')
+            _setup_paystack_sync(user_id, name, email, phone)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
@@ -194,9 +210,22 @@ def register():
 
     db.session.commit()
 
-    # FIX: run Paystack setup in background thread — never blocks registration
+    # FIX: Paystack customer + DVA creation now happens SYNCHRONOUSLY here,
+    # not in a background thread. This is what actually makes the account
+    # number available "at once" — the user reaches the dashboard moments
+    # later via /verify-otp (after typing the code, which takes at least a
+    # few seconds), and /verify-otp returns user.to_dict() fresh from the
+    # DB, so as long as this finishes before that — which a ~1-2s Paystack
+    # round trip comfortably does — the account number is just already
+    # there, no polling or "come back later" needed. If Paystack happens to
+    # be slow/down at this exact moment, this still can't fail registration
+    # itself (wrapped in try/except inside _setup_paystack_sync), and falls
+    # back to the same background-retry-at-login path as before so the
+    # user isn't permanently stuck without one.
     app = current_app._get_current_object()
-    _setup_paystack_background(app, user.id, name, email, phone)
+    dva_ready = _setup_paystack_sync(user.id, name, email, phone)
+    if not dva_ready:
+        _setup_paystack_background(app, user.id, name, email, phone)
 
     # Send OTP — return 200 even if SMS fails (user can tap Resend)
     sms_sent, _, otp_message = _send_otp(user, purpose='registration')

@@ -102,8 +102,28 @@ def get_all_users():
             'id': u.id, 'name': u.name, 'email': u.email, 'phone': u.phone,
             'wallet_balance': round(u.wallet_balance, 2),
             'referral_balance': round(u.referral_balance, 2),
+            'referral_code': u.referral_code,
             'is_active': u.is_active, 'is_verified': u.is_verified, 'role': u.role,
             'created_at': u.created_at.isoformat() if u.created_at else None,
+            'last_login': u.last_login.isoformat() if u.last_login else None,
+            # PIN STATUS ONLY — never the PIN itself. Both PINs are bcrypt
+            # hashed (one-way); there is no operation, admin or otherwise,
+            # that recovers the original digits from a hash — that's the
+            # whole point of hashing them in the first place, and it's not
+            # something this endpoint (or any endpoint) can be made to do
+            # without storing PINs in plaintext, which would undo that
+            # security property for every user account. What IS useful and
+            # safe to expose for support purposes: whether each PIN has
+            # been set at all, when, and whether it's currently locked from
+            # too many wrong attempts.
+            'login_pin_set':                 bool(u.login_pin_hash),
+            'login_pin_set_at':               u.login_pin_set_at.isoformat() if u.login_pin_set_at else None,
+            'login_pin_locked':               bool(u.login_pin_locked_until and u.login_pin_locked_until > datetime.utcnow()),
+            'transaction_pin_set':            bool(u.transaction_pin_hash),
+            'transaction_pin_set_at':         u.transaction_pin_set_at.isoformat() if u.transaction_pin_set_at else None,
+            'transaction_pin_locked':         bool(u.transaction_pin_locked_until and u.transaction_pin_locked_until > datetime.utcnow()),
+            'virtual_account_number':         u.virtual_account_number,
+            'virtual_bank_name':              u.virtual_bank_name,
         } for u in users]
     })
 
