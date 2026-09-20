@@ -84,7 +84,7 @@ def promote_to_admin():
     if data.get('secret') != 'cheap4u-admin-setup-2024':
         return jsonify({'status': 'error', 'message': 'Invalid secret'}), 403
     email = (data.get('email') or '').lower()
-    user = User.query.filter_by(email=email).first()
+    user = User.query.filter(func.lower(User.email) == email).first()
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
     user.role = 'admin'

@@ -14,6 +14,7 @@
 import bcrypt
 from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime, timedelta
+from sqlalchemy import func
 from models import db, User, OTP
 import gamification as gamification_service
 from utils import generate_referral_code, generate_otp, send_sms, validate_email, validate_phone
@@ -150,13 +151,28 @@ def _setup_paystack_background(app, user_id, name, email, phone):
     t.start()
 
 
+def _user_by_email(email):
+    """
+    Case-insensitive email lookup. Every current code path lowercases the
+    email before storing it (see register() below), so this shouldn't
+    matter for accounts created by the current code — but it's cheap
+    insurance against any account created by an older version of this
+    codebase that might have stored a mixed-case email, which a
+    case-sensitive filter_by(email=...) would then never match against a
+    lowercased login attempt (Postgres string equality is case-sensitive
+    by default). A user typing their password correctly but still getting
+    "Invalid credentials" is exactly the symptom that mismatch produces.
+    """
+    return User.query.filter(func.lower(User.email) == email.lower()).first()
+
+
 def _find_user_by_identifier(identifier):
     """Look up a user by email or Nigerian local phone number."""
     identifier = (identifier or '').strip()
     if not identifier:
         return None
     if '@' in identifier:
-        return User.query.filter_by(email=identifier.lower()).first()
+        return _user_by_email(identifier)
     return User.query.filter_by(phone=identifier).first()
 
 
@@ -184,7 +200,7 @@ def register():
         return jsonify({'status': 'error', 'message': 'Enter a valid Nigerian phone number (e.g. 080XXXXXXXX)'}), 400
     if len(password) < 6:
         return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'}), 400
-    if User.query.filter_by(email=email).first():
+    if _user_by_email(email):
         return jsonify({'status': 'error', 'message': 'Email already registered'}), 400
     if User.query.filter_by(phone=phone).first():
         return jsonify({'status': 'error', 'message': 'Phone number already registered'}), 400
@@ -304,7 +320,7 @@ def login():
     if not email or not password:
         return jsonify({'status': 'error', 'message': 'Email and password required'}), 400
 
-    user = User.query.filter_by(email=email).first()
+    user = _user_by_email(email)
     if not user or not user.check_password(password):
         return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
     if not user.is_active:
@@ -502,7 +518,7 @@ def forgot_pin():
 
     user = None
     if email:
-        user = User.query.filter_by(email=email).first()
+        user = _user_by_email(email)
     elif phone:
         user = User.query.filter_by(phone=phone).first()
 
@@ -579,7 +595,7 @@ def forgot_password():
     phone = (data.get('phone') or '').strip()
     user  = None
     if email:
-        user = User.query.filter_by(email=email).first()
+        user = _user_by_email(email)
     elif phone:
         user = User.query.filter_by(phone=phone).first()
     if not user:
