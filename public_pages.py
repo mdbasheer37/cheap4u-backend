@@ -196,20 +196,25 @@ For questions about these Terms, contact us through the support option in the Ap
 
 PRIVACY_POLICY_TEXT = """Privacy Policy
 
-Last updated: July 2026
+Last updated: September 2026
 
-This Privacy Policy explains how Cheap4U Technology collects, uses, and protects your information when you use the Cheap4U mobile application ("App").
+This Privacy Policy explains how Cheap4U Technology ("Cheap4U", "we", "our", "us") collects, uses, shares, and protects your information when you use the Cheap4U mobile application (the "App"), and explains the permissions the App requests on your device.
 
 1. Information We Collect
-- Account information: your name, email address, phone number, and password (stored securely as a hash, never in plain text).
+- Account information: your name, email address, phone number, and password (stored securely as a salted hash, never in plain text).
 - Transaction information: purchases you make (airtime, data, cable TV, electricity, exam pins), amounts, timestamps, and recipient details you enter (phone numbers, meter numbers, smartcard numbers).
 - Wallet & payment information: wallet balance and funding history. Card/bank details you enter to fund your wallet are handled directly by Paystack, our payment processor - we do not receive or store your full card number, CVV, or PIN.
-- Device & usage information: basic technical information such as app version and error logs, used to diagnose and fix problems.
+- Device & usage information: basic technical information such as app version, device model, and error logs, used to diagnose and fix problems.
+- Voice input (Microphone): if you tap the microphone icon to speak to the in-app AI Assistant instead of typing, the App requests microphone access and uses your device's built-in speech-to-text service to convert your spoken words into text. We do not record, store, or listen to your audio ourselves - only the resulting text is sent to our AI Assistant to process your request. You can decline microphone permission and use the AI Assistant by typing instead.
+- Biometric authentication (Fingerprint): if you enable fingerprint unlock for faster App sign-in, authentication is performed entirely by your device's operating system (Android's FingerprintManager/BiometricPrompt). Cheap4U never receives, sees, transmits, or stores your fingerprint or any other biometric data - your device only tells the App "authenticated" or "not authenticated."
+- Notifications: with your permission, we send local and push notifications for things like transaction confirmations, bill reminders, and referral/cashback updates.
 
 2. How We Use Your Information
 - To process your airtime, data, cable TV, electricity, and exam PIN purchases through our provider partners (CheapDataHub, VTpass, and similar VTU providers).
 - To fund and manage your in-app wallet, including via Paystack.
-- To communicate with you about your transactions, account, or referral earnings (via SMS, email, or in-app notifications).
+- To let you interact with the in-app AI Assistant, by voice or text.
+- To authenticate you securely, including via device biometrics.
+- To communicate with you about your transactions, account, bill reminders, or referral earnings (via SMS, email, push, or in-app notifications).
 - To detect and prevent fraud, and to enforce our Terms of Service.
 - To improve the App and fix bugs.
 
@@ -218,26 +223,34 @@ We share only what's necessary to provide the service:
 - With Paystack, to process wallet funding.
 - With our VTU provider partners (e.g. CheapDataHub, VTpass), to fulfil the specific airtime/data/cable/electricity/exam-pin purchase you request - this includes the recipient phone number, meter number, or smartcard number you provide.
 - With SMS/communication providers, to send you OTPs and transaction notifications.
+- With your device's operating system, to perform on-device speech-to-text (voice input) and biometric authentication (fingerprint) - Cheap4U itself never receives raw audio or biometric data.
 - We do not sell your personal information to advertisers or other third parties.
 - We may disclose information if required by Nigerian law or a valid legal request.
 
-4. Data Retention
-We retain your account and transaction data for as long as your account is active, and for a reasonable period afterward as required for accounting, fraud prevention, and legal compliance.
+4. Permissions the App Requests
+- Internet: required to connect to our servers and provider partners.
+- Microphone: optional, only used while you are actively using voice input in the AI Assistant.
+- Notifications: optional, used to alert you about transactions, reminders, and offers.
+- Biometric/Fingerprint hardware: optional, used only to unlock the App faster; never used to collect or store your biometric data.
+You can review and revoke any of these permissions at any time in your device's Settings, without losing access to the App's core features.
 
-5. Your Rights
+5. Data Retention
+We retain your account and transaction data for as long as your account is active, and for a reasonable period afterward as required for accounting, fraud prevention, and legal compliance. We do not retain voice audio or biometric data at all - it never reaches our servers.
+
+6. Your Rights
 You can review and update your profile information in the App at any time. You may request account deletion through the Account Deletion option in your Profile, or via the public Delete Account page at /delete-account - this will deactivate your account and remove your personal data from our active systems, except where we are required to retain transaction records for legal/accounting purposes.
 
-6. Security
+7. Security
 We use industry-standard measures (password hashing, encrypted connections, rate limiting) to protect your data. No method of transmission or storage is 100% secure, but we work to protect your information to the best of our ability.
 
-7. Children's Privacy
+8. Children's Privacy
 The App is not directed at children under 18. We do not knowingly collect data from children under 18.
 
-8. Changes to This Policy
+9. Changes to This Policy
 We may update this Privacy Policy from time to time. We will indicate the "Last updated" date above when changes are made. Continued use of the App after changes are posted means you accept the updated Policy.
 
-9. Contact Us
-For questions about this Privacy Policy or your data, contact us through the support option in the App."""
+10. Contact Us
+For questions about this Privacy Policy or your data, contact us through the support option in the App, or by email at supportcheap4u@gmail.com."""
 
 
 def _parse_legal_sections(raw_text):
