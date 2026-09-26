@@ -619,7 +619,7 @@ def reset_password():
     data         = request.get_json() or {}
     user_id      = data.get('user_id')
     otp_code     = data.get('otp_code', '').strip()
-    new_password = data.get('new_password', '').strip()
+    new_password = data.get('new_password') or ''
     if not all([user_id, otp_code, new_password]):
         return jsonify({'status': 'error', 'message': 'user_id, otp_code and new_password required'}), 400
     if len(new_password) < 6:
