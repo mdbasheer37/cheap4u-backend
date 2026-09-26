@@ -322,7 +322,7 @@ def login():
 
     user = _user_by_email(email)
     if not user or not user.check_password(password):
-        return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
+        return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 400
     if not user.is_active:
         return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403
     if not user.is_verified:
@@ -373,7 +373,7 @@ def login_with_pin():
         # measurably faster than a wrong-PIN response (avoids leaking which
         # phone numbers/emails have accounts via timing).
         bcrypt.checkpw(pin.encode('utf-8'), _DUMMY_HASH.encode('utf-8'))
-        return jsonify({'status': 'error', 'message': 'Incorrect phone/email or PIN'}), 401
+        return jsonify({'status': 'error', 'message': 'Incorrect phone/email or PIN'}), 400
 
     if not user.is_active:
         return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403
@@ -392,7 +392,7 @@ def login_with_pin():
             'message': "PIN login isn't set up for this account yet. Please log in with your password.",
         }), 400
     if result != 'ok':
-        return jsonify({'status': 'error', 'message': 'Incorrect phone/email or PIN'}), 401
+        return jsonify({'status': 'error', 'message': 'Incorrect phone/email or PIN'}), 400
 
     if not user.is_verified:
         return jsonify({
@@ -436,7 +436,7 @@ def set_login_pin():
         if result == 'locked':
             return jsonify({'status': 'error', 'message': _lock_message(user.login_pin_lock_remaining())}), 429
         if result != 'ok':
-            return jsonify({'status': 'error', 'message': 'Incorrect current PIN'}), 401
+            return jsonify({'status': 'error', 'message': 'Incorrect current PIN'}), 400
 
     if not new_pin or not new_pin.isdigit() or not (4 <= len(new_pin) <= 6):
         return jsonify({'status': 'error', 'message': 'PIN must be 4-6 digits'}), 400
@@ -468,7 +468,7 @@ def set_transaction_pin():
         if result == 'locked':
             return jsonify({'status': 'error', 'message': _lock_message(user.transaction_pin_lock_remaining())}), 429
         if result != 'ok':
-            return jsonify({'status': 'error', 'message': 'Incorrect current PIN'}), 401
+            return jsonify({'status': 'error', 'message': 'Incorrect current PIN'}), 400
 
     if not new_pin or not new_pin.isdigit() or not (4 <= len(new_pin) <= 6):
         return jsonify({'status': 'error', 'message': 'PIN must be 4-6 digits'}), 400
@@ -501,7 +501,7 @@ def verify_pin():
         return jsonify({'status': 'error', 'message': _lock_message(user.transaction_pin_lock_remaining())}), 429
     if result == 'ok':
         return jsonify({'status': 'success', 'message': 'PIN verified'})
-    return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 401
+    return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 400
 
 
 # ── Forgot PIN (login or transaction) ────────────────────────────────────

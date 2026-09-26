@@ -81,7 +81,7 @@ def airtime():
     pin_ok, pin_err = _verify_pin(user, pin)
     if not pin_ok:
         logger.warning(f"[Airtime] PIN check failed — user {user.id}: {pin_err}")
-        return jsonify({'status': 'error', 'message': pin_err}), 401
+        return jsonify({'status': 'error', 'message': pin_err}), 400
 
     # Basic field validation (detailed validation happens inside buy_airtime too)
     if network not in ('MTN', 'Airtel', 'Glo', '9Mobile'):
@@ -121,7 +121,7 @@ def data_purchase():
     pin_ok, pin_err = _verify_pin(user, pin)
     if not pin_ok:
         logger.warning(f"[Data] PIN check failed — user {user.id}: {pin_err}")
-        return jsonify({'status': 'error', 'message': pin_err}), 401
+        return jsonify({'status': 'error', 'message': pin_err}), 400
 
     if not plan_id:
         return jsonify({'status': 'error', 'message': 'plan_id is required'}), 400
@@ -165,7 +165,7 @@ def electricity():
     pin_ok, pin_err = _verify_pin(user, pin)
     if not pin_ok:
         logger.warning(f"[Electricity] PIN check failed — user {user.id}: {pin_err}")
-        return jsonify({'status': 'error', 'message': pin_err}), 401
+        return jsonify({'status': 'error', 'message': pin_err}), 400
 
     if not disco:
         return jsonify({'status': 'error', 'message': 'disco (electricity company) is required'}), 400
@@ -208,7 +208,7 @@ def cable_tv():
     pin_ok, pin_err = _verify_pin(user, pin)
     if not pin_ok:
         logger.warning(f"[CableTV] PIN check failed — user {user.id}: {pin_err}")
-        return jsonify({'status': 'error', 'message': pin_err}), 401
+        return jsonify({'status': 'error', 'message': pin_err}), 400
 
     if not plan_id:
         return jsonify({'status': 'error', 'message': 'plan_id is required'}), 400
@@ -250,7 +250,7 @@ def exam_pins():
     pin_ok, pin_err = _verify_pin(user, pin)
     if not pin_ok:
         logger.warning(f"[ExamPIN] PIN check failed — user {user.id}: {pin_err}")
-        return jsonify({'status': 'error', 'message': pin_err}), 401
+        return jsonify({'status': 'error', 'message': pin_err}), 400
 
     if exam_type not in ('WAEC', 'NECO', 'NABTEB', 'JAMB'):
         return jsonify({'status': 'error',
