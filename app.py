@@ -2,20 +2,53 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
+from werkzeug.middleware.proxy_fix import ProxyFix
 from conpig import Config
 from models import db
 import os
 import importlib
-import requests as http_requests
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Columns the current models expect on tables that may already exist in an
+# older live database. db.create_all() never adds columns to an existing table,
+# and if any of these are missing every User/OTP query fails with "column ...
+# does not exist" — which takes down sign-up, login AND the whole OTP flow.
+# They are applied automatically at boot (see _init_db_and_extras) and are all
+# idempotent; /api/debug/add-pin-columns still exists and runs the same list.
+AUTH_COLUMN_MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_hash VARCHAR(200)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_set_at TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_failed_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_locked_until TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_set_at TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_failed_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_locked_until TIMESTAMP",
+    "ALTER TABLE otps ADD COLUMN IF NOT EXISTS provider_message_id VARCHAR(100)",
+]
+
 
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+
+    # Render runs a reverse proxy in front of gunicorn, so without this
+    # request.remote_addr is the PROXY's address for every request and every
+    # per-IP rate limit (login, register, ...) is shared by ALL users combined.
+    # ProxyFix reads the Nth entry counting from the RIGHT of X-Forwarded-For —
+    # the entries the platform's own proxies appended, which a client cannot
+    # forge (anything a client sends sits further left). N defaults to 1; if
+    # /api/debug/check-config (with ENABLE_DEBUG_ROUTES=true) shows that
+    # client_ip_seen is NOT your own public IP, set TRUSTED_PROXY_HOPS=2 on the
+    # server (one more proxy sits in front of the app). Never set it higher than
+    # the number of proxies actually in front, or clients could spoof their IP.
+    try:
+        _hops = max(1, int(os.getenv('TRUSTED_PROXY_HOPS', '1')))
+    except ValueError:
+        _hops = 1
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_hops)
 
     # Log which database we are connecting to (masked)
     db_url = app.config.get('SQLALCHEMY_DATABASE_URI', '')
@@ -29,6 +62,16 @@ def create_app():
     # circular imports)
     from extensions import limiter
     limiter.init_app(app)
+
+    # Flask-Limiter's default 429 is an HTML page, which the mobile app can't
+    # parse (users just saw "Server error (HTTP 429)"). Answer in the same JSON
+    # shape as every other error so the app can show a readable message.
+    @app.errorhandler(429)
+    def _too_many_requests(e):
+        return jsonify({
+            'status':  'error',
+            'message': 'Too many attempts. Please wait a few minutes and try again.',
+        }), 429
 
     # ── Register blueprints ──────────────────────────────────────────
     from auth import auth_bp
@@ -176,13 +219,10 @@ def create_app():
         logger.warning('airtime_to_cash.py not found — skipping')
 
     # ── Debug routes ────────────────────────────────────────────────
-    def _to_intl(phone):
-        phone = str(phone).strip().replace(' ', '').replace('-', '')
-        if phone.startswith('0') and len(phone) == 11 and phone.isdigit():
-            return '234' + phone[1:]
-        elif phone.startswith('234') and len(phone) == 13 and phone.isdigit():
-            return phone
-        return None
+    def _debug_enabled():
+        """Diagnostic endpoints that can spend SMS credit or reveal config are
+        OFF unless DEBUG is on or ENABLE_DEBUG_ROUTES=true is set on the server."""
+        return bool(app.config.get('DEBUG')) or os.getenv('ENABLE_DEBUG_ROUTES', '').strip().lower() == 'true'
 
     @app.route('/api/debug/add-plan-type-column', methods=['GET'])
     def add_plan_type_column():
@@ -272,16 +312,7 @@ def create_app():
         from sqlalchemy import text
         try:
             with db.engine.connect() as conn:
-                statements = [
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_hash VARCHAR(200)",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_set_at TIMESTAMP",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_failed_attempts INTEGER NOT NULL DEFAULT 0",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_locked_until TIMESTAMP",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_set_at TIMESTAMP",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_failed_attempts INTEGER NOT NULL DEFAULT 0",
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_locked_until TIMESTAMP",
-                    "ALTER TABLE otps ADD COLUMN IF NOT EXISTS provider_message_id VARCHAR(100)",
-                ]
+                statements = AUTH_COLUMN_MIGRATIONS
                 for stmt in statements:
                     conn.execute(text(stmt))
                 conn.commit()
@@ -299,6 +330,11 @@ def create_app():
         Force-pay ₦50 referral bonus to a specific referrer
         for ALL users they referred, regardless of referral_bonus_claimed flag.
         """
+        # UNAUTHENTICATED endpoint that credits referral balances (and, without
+        # a referrer_id, lists referrers' names/emails/balances) — it must never
+        # be reachable on a live server unless you deliberately switch it on.
+        if not _debug_enabled():
+            return jsonify({'status': 'error', 'message': 'Not found'}), 404
         from models import db, User, ReferralTransaction
         import json
 
@@ -395,6 +431,8 @@ def create_app():
         
     @app.route('/api/debug/check-config', methods=['GET'])
     def debug_check_config():
+        if not _debug_enabled():
+            return jsonify({'status': 'error', 'message': 'Not found'}), 404
         api_key = app.config.get('TERMII_API_KEY', '').strip()
         db_url  = app.config.get('SQLALCHEMY_DATABASE_URI', '')
         ps_key  = app.config.get('PAYSTACK_SECRET_KEY', '').strip()
@@ -404,44 +442,39 @@ def create_app():
             'PAYSTACK_SECRET_KEY': (ps_key[:8]+'...') if ps_key else 'NOT_SET',
             'DB_URL_PREVIEW':      db_url[:50]+'...' if len(db_url)>50 else db_url,
             'DB_TYPE':             'postgresql' if 'postgresql' in db_url else 'sqlite',
+            # What the app sees for the caller: if client_ip_seen is the same
+            # for every phone/network you test from, rate limits are still being
+            # shared and ProxyFix's x_for needs adjusting for your proxy chain.
+            'client_ip_seen':      request.remote_addr,
+            'x_forwarded_for':     request.headers.get('X-Forwarded-For'),
         })
 
     @app.route('/api/debug/test-sms', methods=['GET', 'POST'])
     def debug_test_sms():
+        """
+        Sends a test SMS through the SAME code path OTPs use (utils.send_sms),
+        so it reflects what real users get. Returns which attempt worked, or
+        Termii's exact error for each attempt that didn't.
+        """
+        if not _debug_enabled():
+            return jsonify({'status': 'error', 'message': 'Not found'}), 404
         if request.method == 'POST':
-            phone_raw = (request.get_json() or {}).get('phone', '09037663816')
+            phone_raw = (request.get_json(silent=True) or {}).get('phone', '')
         else:
-            phone_raw = request.args.get('phone', '09037663816')
-        api_key  = app.config.get('TERMII_API_KEY', '').strip()
-        sender_id = app.config.get('TERMII_SENDER_ID', 'Cheap4uApp').strip()
-        if not api_key:
+            phone_raw = request.args.get('phone', '')
+        if not phone_raw:
+            return jsonify({'error': 'phone is required'}), 400
+        if not app.config.get('TERMII_API_KEY', '').strip():
             return jsonify({'error': 'TERMII_API_KEY not set'}), 500
-        phone_intl = _to_intl(phone_raw)
-        if not phone_intl:
-            return jsonify({'error': f'Bad phone: {phone_raw}'}), 400
-        results = []
-        for sender, channel in [(None, 'number'), ('talert', 'generic'), (sender_id, 'generic')]:
-            payload = {k: v for k, v in {
-                'api_key': api_key, 'to': phone_intl, 'from': sender,
-                'sms': 'Cheap4u test OTP: 123456. Ignore.',
-                'type': 'plain', 'channel': channel,
-            }.items() if v is not None}
-            try:
-                r = http_requests.post(
-                    'https://api.ng.termii.com/api/sms/send',
-                    json=payload, headers={'Content-Type': 'application/json'}, timeout=15)
-                try:
-                    body = r.json()
-                except Exception:
-                    body = r.text
-                success = r.status_code == 200 and isinstance(body, dict) and body.get('message') == 'Successfully Sent'
-                results.append({'sender': sender, 'channel': channel,
-                                 'http_status': r.status_code, 'response': body, 'success': success})
-                if success:
-                    return jsonify({'result': 'SMS_SENT', 'via': f'{sender}/{channel}', 'attempts': results})
-            except Exception as e:
-                results.append({'sender': sender, 'channel': channel, 'error': str(e), 'success': False})
-        return jsonify({'result': 'ALL_FAILED', 'attempts': results}), 500
+        from utils import send_sms
+        diagnostics = {}
+        sent, message_id, error = send_sms(phone_raw, 'Cheap4u test message. Ignore.', diagnostics=diagnostics)
+        return jsonify({
+            'result':     'SMS_SENT' if sent else 'ALL_FAILED',
+            'message_id': message_id,
+            'error':      error,
+            'attempts':   diagnostics,
+        }), (200 if sent else 500)
 
     # ── Core routes ──────────────────────────────────────────────────
     @app.route('/health', methods=['GET'])
@@ -503,6 +536,17 @@ def create_app():
                 logger.info('✅ Verified support_chat_messages.action column')
             except Exception as e:
                 logger.warning(f'Column migration check failed (non-fatal): {e}')
+            # Same self-healing for the PIN + OTP columns (see
+            # AUTH_COLUMN_MIGRATIONS). Without this, a database that predates
+            # them breaks every OTP/login query until someone remembers to
+            # visit /api/debug/add-pin-columns by hand after deploying.
+            if db.engine.dialect.name == 'postgresql':
+                for stmt in AUTH_COLUMN_MIGRATIONS:
+                    try:
+                        with db.engine.begin() as conn:
+                            conn.execute(db.text(stmt))
+                    except Exception as e:
+                        logger.warning(f'Auth column migration skipped ({stmt[:70]}...): {e}')
             try:
                 from init_plans import init_all
                 init_all()

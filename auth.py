@@ -11,6 +11,24 @@
 #     "quick PIN" login (previously stored ONLY on-device — see
 #     set-login-pin / login-with-pin / reset-pin below).
 #   - NEW: PIN lockout after repeated wrong attempts (models.py).
+#
+# OTP FIXES (this revision):
+#   - `logger` was used in _setup_paystack_sync() but never defined, so every
+#     registration crashed with NameError (also inside the except handler) and
+#     returned 500 BEFORE the OTP was ever sent. Defined below.
+#   - Paystack (customer + DVA, up to 3 x 30s calls) no longer runs in front of
+#     the OTP send. It starts in parallel and register() waits only a few
+#     seconds for it.
+#   - Resending an OTP re-sends the SAME still-valid code instead of rotating it,
+#     so a slow first SMS (common at night) is not invalidated by the resend.
+#   - A sign-up with a mistyped phone number can be corrected ("Change
+#     Email/Phone") instead of being stuck behind "already registered".
+#   - Login of an unverified account respects the resend cooldown.
+#   - OTP input is normalised to digits (spaces/dashes from paste are ignored).
+import logging
+import math
+import re
+import threading
 import bcrypt
 from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime, timedelta
@@ -20,16 +38,53 @@ import gamification as gamification_service
 from utils import generate_referral_code, generate_otp, send_sms, validate_email, validate_phone
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from extensions import limiter
+from flask_limiter.util import get_remote_address
+
+logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
 OTP_RESEND_COOLDOWN_SECONDS = 60
 OTP_EXPIRY_MINUTES = 10
+# A resend re-uses the current code only while it still has at least this long
+# to live (otherwise a fresh code is issued, so the SMS never promises a
+# lifetime of a few seconds).
+OTP_MIN_REUSE_SECONDS = 120
+# How long register() waits for the Paystack account to be ready before it
+# answers anyway. The account keeps being created in the background.
+PAYSTACK_WAIT_SECONDS = 6
 
 # Fixed dummy hash used to keep bcrypt.checkpw() timing similar whether or
 # not an account/PIN exists, so a login-with-pin request can't be used to
 # probe which phone numbers/emails have accounts.
 _DUMMY_HASH = bcrypt.hashpw(b'not-a-real-pin', bcrypt.gensalt()).decode('utf-8')
+
+
+def _body_key(*fields):
+    """
+    Rate-limit key for the OTP endpoints: the ACCOUNT being targeted (taken from
+    the JSON body), falling back to the client IP when it isn't there.
+
+    Per-IP limits are the wrong tool here: behind a proxy they can end up shared
+    by every user (one person's resends then locked everyone else out of their
+    OTP), and they do nothing against someone guessing a single account's code
+    from many IPs. Keying on the account fixes both — each account gets its own
+    small allowance of attempts, which also caps code-guessing per account.
+    """
+    def _key():
+        data = request.get_json(silent=True) or {}
+        for f in fields:
+            v = data.get(f)
+            if v not in (None, ''):
+                return f"{f}:{str(v).strip().lower()}"
+        return get_remote_address()
+    return _key
+
+
+def _clean_code(value):
+    """Keep digits only — users paste codes like '123 456' or '123-456', and a
+    JSON client may send the code as a number rather than a string."""
+    return re.sub(r'\D', '', str(value if value is not None else ''))
 
 
 def invalidate_existing_otps(user_id, purpose=None):
@@ -57,17 +112,56 @@ def can_resend_otp(user_id, purpose='registration'):
     return True
 
 
+def _is_reclaimable(u):
+    """
+    An existing account a new sign-up may take over: unverified (its phone number
+    was never proven) AND it has never held any money. Anything else keeps
+    blocking the email/phone exactly as before.
+    """
+    return (
+        not u.is_verified
+        and not (u.wallet_balance or 0)
+        and not (u.referral_balance or 0)
+    )
+
+
+def _active_otp(user, purpose):
+    """Newest unused, unexpired OTP that was issued for the user's CURRENT phone."""
+    return (
+        OTP.query
+        .filter_by(user_id=user.id, purpose=purpose, is_used=False, phone=user.phone)
+        .filter(OTP.expires_at > datetime.utcnow())
+        .order_by(OTP.created_at.desc())
+        .first()
+    )
+
+
 def _send_otp(user, purpose='registration'):
     """
-    Generates a fresh OTP (invalidating any earlier unused one for the same
-    purpose, so an old code can never be used after a newer one is issued),
-    sends it via Termii, and records the provider's message_id when given.
+    Issues an OTP and sends it via Termii, recording the provider's
+    message_id when given.
+
+    If a still-valid code already exists for this user+purpose+phone, that SAME
+    code is sent again (with its original expiry) rather than a new one being
+    generated. Rotating the code on every resend meant a slow first SMS —
+    which is exactly when people tap Resend — arrived already invalidated and
+    was rejected as "Invalid OTP code". A code for a different phone number is
+    never reused.
 
     Returns (sms_sent: bool, otp_code: str, user_message: str).
     """
+    now      = datetime.utcnow()
+    existing = _active_otp(user, purpose)
+    if existing and (existing.expires_at - now).total_seconds() >= OTP_MIN_REUSE_SECONDS:
+        otp_code   = existing.code
+        expires_at = existing.expires_at
+    else:
+        otp_code   = generate_otp()
+        expires_at = now + timedelta(minutes=OTP_EXPIRY_MINUTES)
+
+    # One live row per user+purpose. The new row gets a fresh created_at, so
+    # the resend cooldown (can_resend_otp) keeps measuring from the last send.
     invalidate_existing_otps(user.id, purpose=purpose)
-    otp_code   = generate_otp()
-    expires_at = datetime.utcnow() + timedelta(minutes=OTP_EXPIRY_MINUTES)
     otp = OTP(
         user_id=user.id, email=user.email, phone=user.phone,
         code=otp_code, purpose=purpose, expires_at=expires_at,
@@ -75,11 +169,18 @@ def _send_otp(user, purpose='registration'):
     db.session.add(otp)
     db.session.commit()
 
-    message = f"Your Cheap4u verification code is {otp_code}. Valid for {OTP_EXPIRY_MINUTES} minutes. Do not share."
+    minutes_left = max(1, math.ceil((expires_at - now).total_seconds() / 60))
+    message = f"Your Cheap4u verification code is {otp_code}. Valid for {minutes_left} minutes. Do not share."
     sms_sent, message_id, error = send_sms(user.phone, message)
 
     if message_id:
         otp.provider_message_id = message_id
+    if not sms_sent:
+        # Nothing was accepted for delivery, so don't make the user sit out the
+        # resend cooldown for an SMS that never went out: back-date the row so
+        # Resend works straight away (it re-sends this same still-valid code).
+        otp.created_at = now - timedelta(seconds=OTP_RESEND_COOLDOWN_SECONDS)
+    if message_id or not sms_sent:
         db.session.commit()
 
     if sms_sent:
@@ -133,22 +234,19 @@ def _setup_paystack_sync(user_id, name, email, phone):
 
 def _setup_paystack_background(app, user_id, name, email, phone):
     """
-    Fallback path only — retries Paystack customer + DVA creation in a
-    background thread. Used at /login when a user somehow still doesn't
-    have a DVA (e.g. it failed synchronously at registration because
-    Paystack was briefly down). Registration itself now calls
-    _setup_paystack_sync() directly instead of this, specifically so the
-    account number is ready immediately in the registration response
-    rather than the user having to wait/reopen the app to see it.
+    Runs Paystack customer + DVA creation in a background thread and returns
+    the started Thread. register() starts it in parallel with the OTP SMS and
+    waits only briefly (see PAYSTACK_WAIT_SECONDS) so a slow Paystack can never
+    delay or lose the OTP; /login uses it to retry for users who still don't
+    have a DVA.
     """
-    import threading
-
     def _run():
         with app.app_context():
             _setup_paystack_sync(user_id, name, email, phone)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
+    return t
 
 
 def _user_by_email(email):
@@ -200,10 +298,29 @@ def register():
         return jsonify({'status': 'error', 'message': 'Enter a valid Nigerian phone number (e.g. 080XXXXXXXX)'}), 400
     if len(password) < 6:
         return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'}), 400
-    if _user_by_email(email):
+    existing_email = _user_by_email(email)
+    existing_phone = User.query.filter_by(phone=phone).first()
+
+    # A VERIFIED account (or one that has ever held money) always blocks a new
+    # sign-up with the same details.
+    if existing_email and not _is_reclaimable(existing_email):
         return jsonify({'status': 'error', 'message': 'Email already registered'}), 400
-    if User.query.filter_by(phone=phone).first():
+    if existing_phone and not _is_reclaimable(existing_phone):
         return jsonify({'status': 'error', 'message': 'Phone number already registered'}), 400
+
+    # An UNVERIFIED, empty leftover is almost always a sign-up whose OTP never
+    # reached the person (phone number mistyped, SMS lost). The OTP screen offers
+    # "Change Email/Phone", which used to dead-end on "already registered" —
+    # burning the email for good. Such an account cannot log in or spend anything,
+    # so a new sign-up can safely take it over; the new owner still has to prove
+    # the phone number with an OTP before the account becomes usable.
+    stale = existing_email or existing_phone
+    if existing_email and existing_phone and existing_email.id != existing_phone.id:
+        return jsonify({
+            'status': 'error',
+            'message': 'That email or phone number is already tied to another unfinished sign-up. '
+                       'Please double-check your details or contact support.',
+        }), 400
 
     referrer = None
     if ref_code:
@@ -211,40 +328,51 @@ def register():
         if not referrer:
             return jsonify({'status': 'error', 'message': 'Invalid referral code'}), 400
 
-    user = User(
-        name=name, email=email, phone=phone,
-        referral_code=generate_referral_code(),
-    )
-    user.set_password(password)
-    db.session.add(user)
-    db.session.flush()
+    if stale:
+        user       = stale
+        user.name  = name
+        user.email = email
+        user.phone = phone
+        user.set_password(password)
+        # Credit a referral only once per account.
+        if referrer and referrer.id != user.id and not user.referred_by_user_id:
+            user.referred_by         = ref_code
+            user.referred_by_user_id = referrer.id
+            referrer.total_referrals = (referrer.total_referrals or 0) + 1
+    else:
+        user = User(
+            name=name, email=email, phone=phone,
+            referral_code=generate_referral_code(),
+        )
+        user.set_password(password)
+        db.session.add(user)
+        db.session.flush()
 
-    if referrer and referrer.id != user.id:
-        user.referred_by         = ref_code
-        user.referred_by_user_id = referrer.id
-        referrer.total_referrals = (referrer.total_referrals or 0) + 1
+        if referrer and referrer.id != user.id:
+            user.referred_by         = ref_code
+            user.referred_by_user_id = referrer.id
+            referrer.total_referrals = (referrer.total_referrals or 0) + 1
 
     db.session.commit()
 
-    # FIX: Paystack customer + DVA creation now happens SYNCHRONOUSLY here,
-    # not in a background thread. This is what actually makes the account
-    # number available "at once" — the user reaches the dashboard moments
-    # later via /verify-otp (after typing the code, which takes at least a
-    # few seconds), and /verify-otp returns user.to_dict() fresh from the
-    # DB, so as long as this finishes before that — which a ~1-2s Paystack
-    # round trip comfortably does — the account number is just already
-    # there, no polling or "come back later" needed. If Paystack happens to
-    # be slow/down at this exact moment, this still can't fail registration
-    # itself (wrapped in try/except inside _setup_paystack_sync), and falls
-    # back to the same background-retry-at-login path as before so the
-    # user isn't permanently stuck without one.
+    # Paystack customer + Dedicated Virtual Account: started in a background
+    # thread RIGHT NOW so it runs in parallel with the OTP SMS below, instead of
+    # in front of it. It used to run inline first — up to three 30s Paystack
+    # calls — so a slow Paystack delayed the OTP by up to 90s, and because the
+    # app only waits 60s the sign-up looked failed even though the account
+    # existed (retrying then hit "Email already registered").
     app = current_app._get_current_object()
-    dva_ready = _setup_paystack_sync(user.id, name, email, phone)
-    if not dva_ready:
-        _setup_paystack_background(app, user.id, name, email, phone)
+    paystack_thread = _setup_paystack_background(app, user.id, name, email, phone)
 
     # Send OTP — return 200 even if SMS fails (user can tap Resend)
     sms_sent, _, otp_message = _send_otp(user, purpose='registration')
+
+    # Give Paystack a few seconds so the account number is normally ready by
+    # the time the user has typed the code, but never hold the response (and
+    # the OTP screen) hostage to it. If it isn't done, it keeps going in the
+    # background and /login retries it if it ever fails.
+    paystack_thread.join(timeout=PAYSTACK_WAIT_SECONDS)
+
     return jsonify({
         'status':  'success',
         'message': f'Account created. {otp_message}',
@@ -254,11 +382,11 @@ def register():
 
 # ── Verify OTP ────────────────────────────────────────────────────────
 @auth_bp.route('/verify-otp', methods=['POST'])
-@limiter.limit("15 per 10 minutes")
+@limiter.limit("10 per 10 minutes", key_func=_body_key('user_id'))
 def verify_otp():
     data     = request.get_json() or {}
     user_id  = data.get('user_id')
-    otp_code = (data.get('otp_code') or '').strip()
+    otp_code = _clean_code(data.get('otp_code'))
     if not user_id or not otp_code:
         return jsonify({'status': 'error', 'message': 'user_id and otp_code required'}), 400
 
@@ -293,7 +421,7 @@ def verify_otp():
 
 # ── Resend OTP ────────────────────────────────────────────────────────
 @auth_bp.route('/resend-otp', methods=['POST'])
-@limiter.limit("5 per 10 minutes")
+@limiter.limit("5 per 10 minutes", key_func=_body_key('user_id'))
 def resend_otp():
     data    = request.get_json() or {}
     user_id = data.get('user_id')
@@ -326,7 +454,12 @@ def login():
     if not user.is_active:
         return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403
     if not user.is_verified:
-        sms_sent, _, otp_message = _send_otp(user, purpose='registration')
+        if can_resend_otp(user.id, purpose='registration'):
+            _, _, otp_message = _send_otp(user, purpose='registration')
+        else:
+            # A code went out moments ago — don't fire another SMS (cost, and
+            # confusion over which one to use). The OTP screen has Resend.
+            otp_message = "An OTP was just sent. Check your SMS, or tap Resend OTP in a minute."
         return jsonify({
             'status': 'error', 'message': f'Account not verified. {otp_message}',
             'requires_verification': True, 'user_id': user.id, 'phone': user.phone,
@@ -506,7 +639,7 @@ def verify_pin():
 
 # ── Forgot PIN (login or transaction) ────────────────────────────────────
 @auth_bp.route('/forgot-pin', methods=['POST'])
-@limiter.limit("5 per 10 minutes")
+@limiter.limit("5 per 10 minutes", key_func=_body_key('email', 'phone'))
 def forgot_pin():
     data     = request.get_json() or {}
     email    = (data.get('email') or '').strip().lower()
@@ -542,11 +675,11 @@ def forgot_pin():
 
 # ── Reset PIN (login or transaction) — requires a verified OTP ──────────
 @auth_bp.route('/reset-pin', methods=['POST'])
-@limiter.limit("10 per 10 minutes")
+@limiter.limit("10 per 10 minutes", key_func=_body_key('user_id'))
 def reset_pin():
     data     = request.get_json() or {}
     user_id  = data.get('user_id')
-    otp_code = (data.get('otp_code') or '').strip()
+    otp_code = _clean_code(data.get('otp_code'))
     pin_type = (data.get('pin_type') or '').strip().lower()
     new_pin  = data.get('new_pin')
 
@@ -588,7 +721,7 @@ def reset_pin():
 
 # ── Forgot Password ───────────────────────────────────────────────────
 @auth_bp.route('/forgot-password', methods=['POST'])
-@limiter.limit("5 per 10 minutes")
+@limiter.limit("5 per 10 minutes", key_func=_body_key('email', 'phone'))
 def forgot_password():
     data  = request.get_json() or {}
     email = (data.get('email') or '').strip().lower()
@@ -614,11 +747,11 @@ def forgot_password():
 
 # ── Reset Password ────────────────────────────────────────────────────
 @auth_bp.route('/reset-password', methods=['POST'])
-@limiter.limit("10 per 10 minutes")
+@limiter.limit("10 per 10 minutes", key_func=_body_key('user_id'))
 def reset_password():
     data         = request.get_json() or {}
     user_id      = data.get('user_id')
-    otp_code     = data.get('otp_code', '').strip()
+    otp_code     = _clean_code(data.get('otp_code'))
     new_password = data.get('new_password') or ''
     if not all([user_id, otp_code, new_password]):
         return jsonify({'status': 'error', 'message': 'user_id, otp_code and new_password required'}), 400

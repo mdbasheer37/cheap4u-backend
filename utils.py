@@ -1,12 +1,22 @@
 # utils.py
 import random
+import secrets
 import string
 import re
+import time
 import requests
 import logging
 from flask import current_app
 
 logger = logging.getLogger(__name__)
+
+# Hard cap on how long one send_sms() call may take in total, and on any single
+# Termii request within it (see send_sms).
+# 4 attempts x 8s = 32s: every route (incl. the Number API fallback that works
+# without sender-ID approval) still gets a turn even if Termii is slow, but a
+# Termii outage can no longer hold a request for the old 4 x 15s = 60s.
+SMS_TOTAL_BUDGET_SECONDS    = 32
+SMS_ATTEMPT_TIMEOUT_SECONDS = 8
 
 
 def generate_referral_code():
@@ -14,7 +24,10 @@ def generate_referral_code():
 
 
 def generate_otp():
-    return ''.join(random.choices(string.digits, k=6))
+    # `secrets`, not `random`: these codes guard account verification and
+    # password/PIN resets, so they must come from a CSPRNG (random's output is
+    # predictable once enough of it has been observed).
+    return ''.join(secrets.choice(string.digits) for _ in range(6))
 
 
 def format_currency(amount):
@@ -155,7 +168,7 @@ def _termii_number_send(api_key, phone_intl, message, timeout=15):
         return {"sent": False, "message_id": None, "raw_message": None, "error": str(e)}
 
 
-def send_sms(phone, message):
+def send_sms(phone, message, diagnostics=None):
     """
     Send an SMS via Termii. Returns (sent: bool, message_id: str|None,
     error: str|None) — sent=True means Termii's API accepted the request for
@@ -176,10 +189,12 @@ def send_sms(phone, message):
     completely for this account rather than just being unreliable at
     night.
 
-    Each fallback below only fires if the previous attempt was rejected
-    outright by Termii (bad sender, no channel access, etc.) — never for an
-    ambiguous/successful response — so a single OTP request cannot result in
-    more than one SMS actually being sent.
+    Each fallback below only fires if the previous attempt did not succeed
+    (rejected by Termii — bad sender, no channel access, etc. — or timed out),
+    and the whole chain is capped by SMS_TOTAL_BUDGET_SECONDS.
+
+    `diagnostics`: optional dict; when given it is filled with the per-attempt
+    outcome (used by the gated /api/debug/test-sms endpoint).
     """
     api_key = current_app.config.get('TERMII_API_KEY', '').strip()
     if not api_key:
@@ -191,40 +206,60 @@ def send_sms(phone, message):
         logger.error(f"Invalid/unrecognized phone number format (not logging raw value)")
         return False, None, "Invalid phone number format"
 
-    custom_sender = current_app.config.get('TERMII_SENDER_ID', 'Cheap4uApp').strip()
+    # `or` (not just a default): an env var that exists but is empty would
+    # otherwise give "" here and every dnd attempt would go out with no sender.
+    custom_sender = (current_app.config.get('TERMII_SENDER_ID') or 'Cheap4uApp').strip() or 'Cheap4uApp'
 
-    # Attempt 1: 'dnd' channel with our own sender ID — bypasses DND filtering,
-    # the channel Termii recommends for OTP/transactional SMS.
-    result = _termii_attempt(api_key, phone_intl, message, channel="dnd", sender=custom_sender)
-    if result["sent"]:
-        return True, result["message_id"], None
+    # Overall time budget across ALL attempts. Previously each of the four
+    # attempts could wait up to 15s on its own, i.e. a Termii slowdown could
+    # keep the user (and, with a single gunicorn worker, every other request)
+    # waiting ~60s for an OTP that then "failed" anyway. Now the whole chain
+    # is capped, and the user can simply tap Resend.
+    deadline = time.monotonic() + SMS_TOTAL_BUDGET_SECONDS
 
-    # Attempt 2: 'dnd' channel with Termii's shared default sender ('N-Alert') —
-    # covers the case where our own sender ID isn't yet approved/active.
-    result2 = _termii_attempt(api_key, phone_intl, message, channel="dnd", sender="N-Alert")
-    if result2["sent"]:
-        return True, result2["message_id"], None
+    def _next_timeout():
+        left = deadline - time.monotonic()
+        if left < 3:
+            return None
+        return min(SMS_ATTEMPT_TIMEOUT_SECONDS, left)
 
-    # Attempt 3: generic channel, Termii's shared sender.
-    result3 = _termii_attempt(api_key, phone_intl, message, channel="generic", sender="N-Alert")
-    if result3["sent"]:
-        return True, result3["message_id"], None
+    # Attempt order (see the docstring above for why):
+    #   1. 'dnd' channel, our own sender ID — bypasses DND filtering, the
+    #      channel Termii recommends for OTP/transactional SMS.
+    #   2. 'dnd' channel, Termii's shared 'N-Alert' sender — covers our own
+    #      sender ID not yet being approved/active.
+    #   3. 'generic' channel, 'N-Alert'.
+    #   4. Termii's Number API — a genuinely separate endpoint (see
+    #      _termii_number_send's docstring); needs no sender-ID/route approval,
+    #      so it is the one that can work on an account with neither set up.
+    attempts = [
+        (f"dnd/{custom_sender}",
+         lambda to: _termii_attempt(api_key, phone_intl, message, channel="dnd", sender=custom_sender, timeout=to)),
+        ("dnd/N-Alert",
+         lambda to: _termii_attempt(api_key, phone_intl, message, channel="dnd", sender="N-Alert", timeout=to)),
+        ("generic/N-Alert",
+         lambda to: _termii_attempt(api_key, phone_intl, message, channel="generic", sender="N-Alert", timeout=to)),
+        ("number",
+         lambda to: _termii_number_send(api_key, phone_intl, message, timeout=to)),
+    ]
 
-    # Attempt 4: Termii's Number API — a genuinely separate endpoint (see
-    # _termii_number_send's docstring for why the old channel="number" call
-    # to /api/sms/send always failed validation). No sender-ID/route
-    # approval needed, so this is the one that can actually work today on
-    # an account with neither set up yet.
-    result4 = _termii_number_send(api_key, phone_intl, message)
-    if result4["sent"]:
-        return True, result4["message_id"], None
+    errors = {}
+    for label, run in attempts:
+        to = _next_timeout()
+        if to is None:
+            errors[label] = "skipped (time budget used up)"
+            continue
+        result = run(to)
+        if result["sent"]:
+            if diagnostics is not None:
+                diagnostics.update(errors)
+                diagnostics["sent_via"] = label
+            return True, result["message_id"], None
+        errors[label] = result["error"]
 
-    logger.error(
-        f"All Termii send attempts failed → {phone_intl}. "
-        f"Errors: dnd/{custom_sender}={result['error']!r}, "
-        f"dnd/N-Alert={result2['error']!r}, generic/N-Alert={result3['error']!r}, "
-        f"number={result4['error']!r}"
-    )
+    logger.error(f"All Termii send attempts failed → {phone_intl}. Errors: {errors}")
+    if diagnostics is not None:
+        diagnostics.update(errors)
     return False, None, "Could not send SMS at this time"
 
     # NOTE (delivery confirmation): Termii's /api/sms/send response only

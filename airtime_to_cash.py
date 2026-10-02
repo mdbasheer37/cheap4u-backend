@@ -143,8 +143,8 @@ def verify_otp(network, phone, otp):
     phone, err = _validate_phone(phone)
     if err:
         return err
-    otp = (otp or "").strip()
-    if not otp or not otp.isdigit():
+    otp = re.sub(r"\D", "", str(otp or ""))   # tolerate "123 456" / "123-456" pasted from the SMS
+    if not otp:
         return {"status": "error", "message": "Invalid OTP"}
 
     payload = {"networkName": network, "sender": _to_intl(phone), "otp": otp}
