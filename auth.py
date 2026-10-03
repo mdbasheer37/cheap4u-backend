@@ -448,18 +448,30 @@ def login():
     if not email or not password:
         return jsonify({'status': 'error', 'message': 'Email and password required'}), 400
 
-    user = _user_by_email(email)
-    password_ok = False
-    if user:
+    # Look at EVERY row whose email matches case-insensitively (older sign-ups
+    # can leave duplicates differing only by case) and accept the one whose
+    # password matches, instead of arbitrarily testing just the first row.
+    candidates = User.query.filter(func.lower(User.email) == email).all()
+    user = None
+    for cand in candidates:
         try:
             # Exact match first; then tolerate a stray leading/trailing space
             # added by phone keyboards / autofill.
-            password_ok = user.check_password(password) or (
-                password.strip() != password and user.check_password(password.strip())
-            )
+            if cand.check_password(password) or (
+                password.strip() != password and cand.check_password(password.strip())
+            ):
+                user = cand
+                break
         except ValueError:
-            password_ok = False
-    if not user or not password_ok:
+            continue
+    if not user:
+        # Reason goes to the server log only (never to the client) so you can
+        # tell "no such account" from "wrong password" in the Render logs.
+        if not candidates:
+            logger.warning("Login failed: no account for email %r", email)
+        else:
+            logger.warning("Login failed: wrong password for user id(s) %s",
+                           [c.id for c in candidates])
         return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 400
     if not user.is_active:
         return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403
