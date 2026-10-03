@@ -8,9 +8,16 @@ load_dotenv(override=False)
 
 
 def _fix_db_url(url):
-    """Fix postgres:// → postgresql:// for SQLAlchemy."""
-    if url and url.startswith('postgres://'):
-        return url.replace('postgres://', 'postgresql://', 1)
+    """Normalise any Postgres URL to the psycopg2 driver (the one in requirements.txt).
+
+    Handles postgres://, postgresql:// and postgresql+psycopg:// (psycopg v3),
+    which crashes with "No module named 'psycopg'" if v3 isn't installed.
+    """
+    if not url:
+        return url
+    for prefix in ('postgres://', 'postgresql+psycopg://', 'postgresql://'):
+        if url.startswith(prefix):
+            return 'postgresql+psycopg2://' + url[len(prefix):]
     return url
 
 
