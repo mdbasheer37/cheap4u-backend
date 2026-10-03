@@ -449,7 +449,17 @@ def login():
         return jsonify({'status': 'error', 'message': 'Email and password required'}), 400
 
     user = _user_by_email(email)
-    if not user or not user.check_password(password):
+    password_ok = False
+    if user:
+        try:
+            # Exact match first; then tolerate a stray leading/trailing space
+            # added by phone keyboards / autofill.
+            password_ok = user.check_password(password) or (
+                password.strip() != password and user.check_password(password.strip())
+            )
+        except ValueError:
+            password_ok = False
+    if not user or not password_ok:
         return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 400
     if not user.is_active:
         return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403
