@@ -27,6 +27,8 @@ def _paystack(method, path, data=None, timeout=30):
     try:
         if method == 'GET':
             r = requests.get(url, headers=headers, timeout=timeout)
+        elif method == 'PUT':
+            r = requests.put(url, json=data, headers=headers, timeout=timeout)
         else:
             r = requests.post(url, json=data, headers=headers, timeout=timeout)
         result = r.json()
@@ -37,8 +39,30 @@ def _paystack(method, path, data=None, timeout=30):
         return False, {'message': str(e)}
 
 
+def _intl_phone(phone):
+    """Nigerian local 080XXXXXXXX -> +23480XXXXXXXX (Paystack stores/accepts this form reliably)."""
+    digits = ''.join(ch for ch in str(phone or '') if ch.isdigit())
+    if len(digits) == 11 and digits.startswith('0'):
+        return '+234' + digits[1:]
+    if digits.startswith('234') and len(digits) == 13:
+        return '+' + digits
+    return str(phone or '').strip()
+
+
+def _names_for(user_name):
+    parts = (user_name or '').strip().split(' ', 1)
+    first = parts[0] or 'Customer'
+    last = parts[1].strip() if len(parts) > 1 and parts[1].strip() else first
+    return first, last
+
+
 def create_paystack_customer(email, first_name, last_name, phone):
-    """Create Paystack customer. Returns customer_code or raises."""
+    """Create (or fetch existing) Paystack customer. Returns customer_code or raises."""
+    # Paystack's dedicated-account API rejects customers with no last name
+    # (single-name users like "Khadeeja"), so never send an empty one.
+    first_name = (first_name or '').strip() or 'Customer'
+    last_name  = (last_name or '').strip() or first_name
+    phone      = _intl_phone(phone)
     ok, result = _paystack('POST', '/customer', {
         'email':      email,
         'first_name': first_name,
@@ -46,35 +70,86 @@ def create_paystack_customer(email, first_name, last_name, phone):
         'phone':      phone,
     }, timeout=12)
     if ok:
-        return result['data']['customer_code']
+        code = result['data']['customer_code']
+        # Make sure an already-existing customer also has the name/phone set.
+        _paystack('PUT', f'/customer/{code}', {
+            'first_name': first_name, 'last_name': last_name, 'phone': phone,
+        }, timeout=12)
+        return code
+    # Already exists? look it up by email.
+    ok, found = _paystack('GET', f'/customer/{email}', timeout=12)
+    if ok:
+        return found['data']['customer_code']
     raise Exception(f"Paystack customer creation failed: {result.get('message')}")
 
 
-def create_dedicated_virtual_account(customer_code):
+def create_dedicated_virtual_account_ex(customer_code):
     """
-    Create DVA for customer.
-    Returns dict with account details, or None if unavailable.
+    Create DVA for customer. Returns (account_dict_or_None, error_message_or_None)
+    so callers can tell the user / the logs WHY it failed.
     """
+    last_error = 'Account number is not available right now'
     for bank in ('wema-bank', 'titan-paystack'):
         ok, result = _paystack('POST', '/dedicated_account', {
             'customer':       customer_code,
             'preferred_bank': bank,
-        }, timeout=12)
+        }, timeout=15)
         if ok:
             acct = result['data']
             return {
                 'account_number': acct['account_number'],
                 'bank_name':      acct['bank']['name'],
                 'account_name':   acct['account_name'],
-            }
-        msg = result.get('message', '').lower()
-        logger.warning(f'DVA [{bank}] failed: {result.get("message")}')
-        if any(x in msg for x in (
-            'live', 'not enabled', 'not available',
-            'upgrade', 'feature', 'contact', 'invalid key'
-        )):
-            return None
-    return None
+            }, None
+        last_error = result.get('message') or last_error
+        logger.warning(f'DVA [{bank}] failed: {last_error}')
+        msg = last_error.lower()
+        if any(x in msg for x in ('not enabled', 'not available', 'upgrade', 'invalid key', 'required')):
+            break
+    return None, last_error
+
+
+def create_dedicated_virtual_account(customer_code):
+    """Backward-compatible wrapper: returns the account dict or None."""
+    dva, _ = create_dedicated_virtual_account_ex(customer_code)
+    return dva
+
+
+def ensure_virtual_account(user):
+    """
+    Make sure `user` has a Paystack customer AND a dedicated account number,
+    creating whatever is missing. Commits on success. Returns (ok, error_message).
+    Never raises.
+    """
+    try:
+        if user.virtual_account_number:
+            return True, None
+        if not user.paystack_customer_code:
+            parts = (user.name or '').strip().split(' ', 1)
+            user.paystack_customer_code = create_paystack_customer(
+                user.email, parts[0], parts[1] if len(parts) > 1 else '', user.phone)
+            db.session.commit()
+        dva, err = create_dedicated_virtual_account_ex(user.paystack_customer_code)
+        if not dva and err and any(w in err.lower() for w in ('phone', 'first name', 'last name', 'required')):
+            # The Paystack customer exists but is missing details (e.g. no phone
+            # saved). Push the user's real details onto it and try once more.
+            first, last = _names_for(user.name)
+            _paystack('PUT', f'/customer/{user.paystack_customer_code}', {
+                'first_name': first, 'last_name': last, 'phone': _intl_phone(user.phone),
+            }, timeout=12)
+            dva, err = create_dedicated_virtual_account_ex(user.paystack_customer_code)
+        if not dva:
+            return False, err
+        user.virtual_account_number = dva['account_number']
+        user.virtual_bank_name      = dva['bank_name']
+        user.virtual_account_name   = dva['account_name']
+        db.session.commit()
+        logger.info(f'DVA created for user {user.id}: {dva["account_number"]}')
+        return True, None
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f'ensure_virtual_account failed for user {getattr(user, "id", "?")}: {e}')
+        return False, str(e)
 
 
 # ── Debug: test Paystack key ──────────────────────────────────────────
@@ -383,18 +458,10 @@ def get_account_details():
     if not user:
         return jsonify({'status': 'error', 'message': 'User not found'}), 404
 
-    # Auto-create DVA if missing
-    if not user.virtual_account_number and user.paystack_customer_code:
-        try:
-            dva = create_dedicated_virtual_account(user.paystack_customer_code)
-            if dva:
-                user.virtual_account_number = dva['account_number']
-                user.virtual_bank_name      = dva['bank_name']
-                user.virtual_account_name   = dva['account_name']
-                db.session.commit()
-                logger.info(f'DVA auto-created for user {user.id}: {dva["account_number"]}')
-        except Exception as e:
-            logger.warning(f'DVA auto-create failed for user {user.id}: {e}')
+    # Auto-create customer + DVA if missing, and report why if it can't be made
+    dva_error = None
+    if not user.virtual_account_number:
+        _, dva_error = ensure_virtual_account(user)
 
     has_dva = bool(user.virtual_account_number)
 
@@ -406,6 +473,7 @@ def get_account_details():
             'account_number':         user.virtual_account_number or None,
             'bank_name':              user.virtual_bank_name or None,
             'account_name':           user.virtual_account_name or None,
+            'account_error':          None if has_dva else dva_error,
             'card_funding_available': True,
             'funding_message': (
                 f'Transfer to {user.virtual_bank_name} — '

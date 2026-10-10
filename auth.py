@@ -215,30 +215,14 @@ def _setup_paystack_sync(user_id, name, email, phone):
     never blocks the caller.
     """
     try:
-        from payment import create_paystack_customer, create_dedicated_virtual_account
+        from payment import ensure_virtual_account
         u = User.query.get(user_id)
         if not u:
             return False
-        if u.virtual_account_number:
-            return True   # already has one — nothing to do
-        if not u.paystack_customer_code:
-            name_parts = name.strip().split(' ', 1)
-            first_name = name_parts[0]
-            last_name  = name_parts[1] if len(name_parts) > 1 else ''
-            u.paystack_customer_code = create_paystack_customer(email, first_name, last_name, phone)
-            db.session.commit()
-            logger.info(f'Paystack customer created for user {user_id}')
-
-        dva = create_dedicated_virtual_account(u.paystack_customer_code)
-        if dva:
-            u.virtual_account_number = dva['account_number']
-            u.virtual_bank_name      = dva['bank_name']
-            u.virtual_account_name   = dva['account_name']
-            db.session.commit()
-            logger.info(f'DVA created for user {user_id}: {dva["bank_name"]} {dva["account_number"]}')
-            return True
-        logger.warning(f'DVA not available for user {user_id}')
-        return False
+        ok, err = ensure_virtual_account(u)
+        if not ok:
+            logger.warning(f'DVA not created for user {user_id}: {err}')
+        return ok
     except Exception as e:
         logger.error(f'Paystack setup error for user {user_id}: {e}')
         return False
