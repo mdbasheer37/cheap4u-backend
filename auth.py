@@ -53,6 +53,18 @@ OTP_MIN_REUSE_SECONDS = 120
 # How long register() waits for the Paystack account to be ready before it
 # answers anyway. The account keeps being created in the background.
 PAYSTACK_WAIT_SECONDS = 6
+# How long verify-otp will wait for the account number if it still isn't ready
+# by the time the user finishes typing the code (normally it already is).
+PAYSTACK_VERIFY_WAIT_SECONDS = 10
+
+# user_id -> running Paystack setup thread (per worker process), so verify-otp
+# can wait on the SAME job instead of starting a duplicate one.
+_paystack_threads = {}
+
+
+def _valid_pin(pin):
+    pin = str(pin or '')
+    return pin.isdigit() and 4 <= len(pin) <= 6
 
 # Fixed dummy hash used to keep bcrypt.checkpw() timing similar whether or
 # not an account/PIN exists, so a login-with-pin request can't be used to
@@ -245,6 +257,7 @@ def _setup_paystack_background(app, user_id, name, email, phone):
             _setup_paystack_sync(user_id, name, email, phone)
 
     t = threading.Thread(target=_run, daemon=True)
+    _paystack_threads[user_id] = t
     t.start()
     return t
 
@@ -289,9 +302,15 @@ def register():
     phone    = (data.get('phone') or '').strip()
     password = data.get('password') or ''
     ref_code = (data.get('referral_code') or '').strip()
+    login_pin       = str(data.get('login_pin') or '').strip()
+    transaction_pin = str(data.get('transaction_pin') or '').strip()
 
     if not all([name, email, phone, password]):
         return jsonify({'status': 'error', 'message': 'All fields are required'}), 400
+    if not _valid_pin(login_pin):
+        return jsonify({'status': 'error', 'message': 'Login PIN is required (4-6 digits)'}), 400
+    if not _valid_pin(transaction_pin):
+        return jsonify({'status': 'error', 'message': 'Transaction PIN is required (4-6 digits)'}), 400
     if not validate_email(email):
         return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
     if not validate_phone(phone):
@@ -334,6 +353,8 @@ def register():
         user.email = email
         user.phone = phone
         user.set_password(password)
+        user.set_login_pin(login_pin)
+        user.set_transaction_pin(transaction_pin)
         # Credit a referral only once per account.
         if referrer and referrer.id != user.id and not user.referred_by_user_id:
             user.referred_by         = ref_code
@@ -345,6 +366,8 @@ def register():
             referral_code=generate_referral_code(),
         )
         user.set_password(password)
+        user.set_login_pin(login_pin)
+        user.set_transaction_pin(transaction_pin)
         db.session.add(user)
         db.session.flush()
 
@@ -410,6 +433,19 @@ def verify_otp():
     user             = User.query.get(user_id)
     user.is_verified = True
     db.session.commit()
+
+    # Make sure the account number is ready before the dashboard opens. Normally
+    # the job started at sign-up finished long ago (the user was typing the OTP);
+    # if it's still running we wait on it, and if it never ran / failed we start
+    # it now. Never blocks longer than PAYSTACK_VERIFY_WAIT_SECONDS.
+    if not user.virtual_account_number:
+        t = _paystack_threads.get(user.id)
+        if not (t and t.is_alive()):
+            t = _setup_paystack_background(
+                current_app._get_current_object(), user.id, user.name, user.email, user.phone)
+        t.join(timeout=PAYSTACK_VERIFY_WAIT_SECONDS)
+        db.session.refresh(user)
+    _paystack_threads.pop(user.id, None)
 
     token = create_access_token(identity=str(user.id))
     return jsonify({

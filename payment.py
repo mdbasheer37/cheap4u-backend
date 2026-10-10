@@ -12,7 +12,7 @@ payment_bp = Blueprint('payment', __name__, url_prefix='/api/payment')
 logger = logging.getLogger(__name__)
 
 
-def _paystack(method, path, data=None):
+def _paystack(method, path, data=None, timeout=30):
     """Make a Paystack API call. Returns (ok, response_dict)."""
     secret = current_app.config.get('PAYSTACK_SECRET_KEY', '').strip()
     if not secret:
@@ -26,9 +26,9 @@ def _paystack(method, path, data=None):
     url = f'https://api.paystack.co{path}'
     try:
         if method == 'GET':
-            r = requests.get(url, headers=headers, timeout=30)
+            r = requests.get(url, headers=headers, timeout=timeout)
         else:
-            r = requests.post(url, json=data, headers=headers, timeout=30)
+            r = requests.post(url, json=data, headers=headers, timeout=timeout)
         result = r.json()
         logger.info(f'Paystack {method} {path} → {r.status_code}: {result}')
         return result.get('status', False), result
@@ -44,7 +44,7 @@ def create_paystack_customer(email, first_name, last_name, phone):
         'first_name': first_name,
         'last_name':  last_name,
         'phone':      phone,
-    })
+    }, timeout=12)
     if ok:
         return result['data']['customer_code']
     raise Exception(f"Paystack customer creation failed: {result.get('message')}")
@@ -59,7 +59,7 @@ def create_dedicated_virtual_account(customer_code):
         ok, result = _paystack('POST', '/dedicated_account', {
             'customer':       customer_code,
             'preferred_bank': bank,
-        })
+        }, timeout=12)
         if ok:
             acct = result['data']
             return {
