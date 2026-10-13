@@ -276,6 +276,22 @@ def _lock_message(seconds):
     return f"Too many incorrect attempts. Try again in {minutes} minute(s)."
 
 
+def _password_variants(password):
+    """
+    The typed password plus the whitespace-only variants of it that phone
+    keyboards cause (a space tacked on by autocomplete/suggestions, or one
+    that was stored at sign-up). Tried in order, exact match first. Only
+    leading/trailing SPACES differ - nothing else is relaxed.
+    """
+    core = password.strip()
+    seen, out = set(), []
+    for v in (password, core, core + ' ', ' ' + core):
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
 # ── Register ──────────────────────────────────────────────────────────
 @auth_bp.route('/register', methods=['POST'])
 @limiter.limit("10 per hour")
@@ -284,7 +300,7 @@ def register():
     name     = (data.get('name') or '').strip()
     email    = (data.get('email') or '').strip().lower()
     phone    = (data.get('phone') or '').strip()
-    password = data.get('password') or ''
+    password = (data.get('password') or '').strip()   # stray keyboard spaces never become part of the password
     ref_code = (data.get('referral_code') or '').strip()
     login_pin       = str(data.get('login_pin') or '').strip()
     transaction_pin = str(data.get('transaction_pin') or '').strip()
@@ -474,24 +490,26 @@ def login():
     candidates = User.query.filter(func.lower(User.email) == email).all()
     user = None
     for cand in candidates:
-        try:
-            # Exact match first; then tolerate a stray leading/trailing space
-            # added by phone keyboards / autofill.
-            if cand.check_password(password) or (
-                password.strip() != password and cand.check_password(password.strip())
-            ):
-                user = cand
-                break
-        except ValueError:
-            continue
+        # Exact match first; then tolerate a stray leading/trailing space
+        # added by phone keyboards / autofill, either in what was just typed
+        # or in what was stored when the account was created.
+        for attempt in _password_variants(password):
+            try:
+                if cand.check_password(attempt):
+                    user = cand
+                    break
+            except ValueError:
+                continue
+        if user:
+            break
     if not user:
         # Reason goes to the server log only (never to the client) so you can
         # tell "no such account" from "wrong password" in the Render logs.
         if not candidates:
             logger.warning("Login failed: no account for email %r", email)
         else:
-            logger.warning("Login failed: wrong password for user id(s) %s",
-                           [c.id for c in candidates])
+            logger.warning("Login failed: wrong password for user id(s) %s (typed password had edge spaces: %s)",
+                           [c.id for c in candidates], password != password.strip())
         return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 400
     if not user.is_active:
         return jsonify({'status': 'error', 'message': 'Account is blocked. Contact support.'}), 403
@@ -794,7 +812,7 @@ def reset_password():
     data         = request.get_json() or {}
     user_id      = data.get('user_id')
     otp_code     = _clean_code(data.get('otp_code'))
-    new_password = data.get('new_password') or ''
+    new_password = (data.get('new_password') or '').strip()
     if not all([user_id, otp_code, new_password]):
         return jsonify({'status': 'error', 'message': 'user_id, otp_code and new_password required'}), 400
     if len(new_password) < 6:
