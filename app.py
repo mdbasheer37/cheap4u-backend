@@ -26,6 +26,7 @@ AUTH_COLUMN_MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_set_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_failed_attempts INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS transaction_pin_locked_until TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS biometric_token_hash VARCHAR(64)",
     "ALTER TABLE otps ADD COLUMN IF NOT EXISTS provider_message_id VARCHAR(100)",
 ]
 

@@ -10,6 +10,9 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.ext.mutable import MutableDict
 from datetime import datetime, timedelta
 import bcrypt
+import hashlib
+import hmac
+import secrets
 
 db = SQLAlchemy()
 
@@ -58,6 +61,9 @@ class User(db.Model):
 
     # ── Transaction PIN — added lockout/audit fields (hash already existed) ──
     transaction_pin_set_at          = db.Column(db.DateTime, nullable=True)
+    # SHA-256 of the random device token that lets a fingerprint scan approve
+    # transactions in place of typing the transaction PIN (see auth.enable_biometric).
+    biometric_token_hash            = db.Column(db.String(64), nullable=True)
     transaction_pin_failed_attempts = db.Column(db.Integer, default=0, nullable=False)
     transaction_pin_locked_until    = db.Column(db.DateTime, nullable=True)
 
@@ -119,6 +125,38 @@ class User(db.Model):
         self.transaction_pin_set_at = datetime.utcnow()
         self.transaction_pin_failed_attempts = 0
         self.transaction_pin_locked_until = None
+        # A new/changed/reset transaction PIN switches fingerprint approval
+        # off everywhere; the user re-enables it with the new PIN.
+        self.biometric_token_hash = None
+
+    # ── Fingerprint approval for transactions ────────────────────────
+    def issue_biometric_token(self):
+        """Create a fresh random device token, store only its hash, return the raw token once."""
+        raw = secrets.token_urlsafe(32)
+        self.biometric_token_hash = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+        return raw
+
+    def clear_biometric_token(self):
+        self.biometric_token_hash = None
+
+    def check_transaction_auth(self, credential):
+        """
+        Verify what the app sends in the `pin` field of a transaction: either the
+        transaction PIN itself, or 'bio:<token>' after a fingerprint scan on a
+        device that enabled it. Returns 'ok', 'locked', 'not_set', 'wrong' or
+        'bio_invalid'. A locked PIN stays locked for fingerprint too.
+        """
+        credential = (credential or '').strip()
+        if credential.startswith('bio:'):
+            if self.transaction_pin_locked_until and self.transaction_pin_locked_until > datetime.utcnow():
+                return 'locked'
+            if not self.biometric_token_hash:
+                return 'bio_invalid'
+            presented = hashlib.sha256(credential[4:].encode('utf-8')).hexdigest()
+            if hmac.compare_digest(presented, self.biometric_token_hash):
+                return 'ok'
+            return 'bio_invalid'
+        return self.check_transaction_pin(credential)
 
     def transaction_pin_lock_remaining(self):
         if self.transaction_pin_locked_until and self.transaction_pin_locked_until > datetime.utcnow():
@@ -169,6 +207,7 @@ class User(db.Model):
             # whether to show "Create PIN" or skip straight to normal login.
             'login_pin_set':          bool(self.login_pin_hash),
             'transaction_pin_set':    bool(self.transaction_pin_hash),
+            'biometric_txn_enabled':  bool(self.biometric_token_hash),
         }
 
 

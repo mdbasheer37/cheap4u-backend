@@ -40,10 +40,13 @@ def _verify_pin(user, pin):
     """
     if not pin:
         return False, 'PIN is required'
-    result = user.check_transaction_pin(pin)
+    # `pin` is either the transaction PIN or 'bio:<token>' (fingerprint approval).
+    result = user.check_transaction_auth(pin)
     db.session.commit()
     if result == 'ok':
         return True, None
+    if result == 'bio_invalid':
+        return False, 'Fingerprint approval is no longer valid. Please enter your PIN.'
     if result == 'locked':
         remaining = user.transaction_pin_lock_remaining()
         minutes = max(1, remaining // 60)

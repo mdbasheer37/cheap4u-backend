@@ -685,16 +685,65 @@ def verify_pin():
     if not pin:
         return jsonify({'status': 'error', 'message': 'PIN required'}), 400
 
-    result = user.check_transaction_pin(pin)
+    # `pin` is either the transaction PIN or 'bio:<token>' (fingerprint approval).
+    result = user.check_transaction_auth(pin)
     db.session.commit()
 
     if result == 'not_set':
         return jsonify({'status': 'error', 'message': 'No PIN set. Please set a PIN first.'}), 400
     if result == 'locked':
         return jsonify({'status': 'error', 'message': _lock_message(user.transaction_pin_lock_remaining())}), 429
+    if result == 'bio_invalid':
+        return jsonify({'status': 'error', 'code': 'bio_invalid',
+                        'message': 'Fingerprint approval is no longer valid. Please enter your PIN.'}), 400
     if result == 'ok':
         return jsonify({'status': 'success', 'message': 'PIN verified'})
     return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 400
+
+
+# ── Fingerprint approval for transactions ────────────────────────────────
+# The server still checks EVERY transaction itself. After the user proves they
+# know the transaction PIN once, the server hands this device a random secret
+# token (only its hash is kept). Later, when a fingerprint scan succeeds, the app
+# sends 'bio:<token>' where it would normally send the PIN, and the server
+# accepts it exactly like a PIN. Changing/resetting the transaction PIN, or
+# calling /disable-biometric, invalidates it.
+@auth_bp.route('/enable-biometric', methods=['POST'])
+@jwt_required()
+@limiter.limit("10 per 10 minutes")
+def enable_biometric():
+    user = User.query.get(int(get_jwt_identity()))
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+    pin = str((request.get_json() or {}).get('pin') or '').strip()
+    if not _valid_pin(pin):
+        return jsonify({'status': 'error', 'message': 'Transaction PIN required'}), 400
+
+    result = user.check_transaction_pin(pin)
+    db.session.commit()
+    if result == 'not_set':
+        return jsonify({'status': 'error', 'message': 'No PIN set. Please set a PIN first.'}), 400
+    if result == 'locked':
+        return jsonify({'status': 'error', 'message': _lock_message(user.transaction_pin_lock_remaining())}), 429
+    if result != 'ok':
+        return jsonify({'status': 'error', 'message': 'Incorrect PIN'}), 400
+
+    token = user.issue_biometric_token()
+    db.session.commit()
+    return jsonify({'status': 'success', 'message': 'Fingerprint approval enabled',
+                    'data': {'biometric_token': token}})
+
+
+@auth_bp.route('/disable-biometric', methods=['POST'])
+@jwt_required()
+@limiter.limit("20 per 10 minutes")
+def disable_biometric():
+    user = User.query.get(int(get_jwt_identity()))
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+    user.clear_biometric_token()
+    db.session.commit()
+    return jsonify({'status': 'success', 'message': 'Fingerprint approval disabled'})
 
 
 # ── Forgot PIN (login or transaction) ────────────────────────────────────
