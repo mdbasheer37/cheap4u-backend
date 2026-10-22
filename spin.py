@@ -387,3 +387,281 @@ def get_platform_stats():
             for uid, name, email, total_won, spins in top_winners
         ],
     }
+
+
+# ── admin reporting (Spin & Win dashboard) ───────────────────────────────────
+#
+# What the admin sees:
+#   * summary  - spins, players, free/paid, fees collected, cash given away ...
+#   * prizes   - which prizes were won how often
+#   * players  - who spun, how many times, how much they won (searchable)
+#   * entries  - the live feed of every single spin
+#
+# The heavy lifting is done by small PURE functions (build_report /
+# aggregate_players) that work on plain dicts, so they can be tested without a
+# database; the DB-facing functions below only fetch rows and hand them over.
+
+# Real naira that lands in a user's wallet / cashback wallet.
+MONEY_TYPES = ('airtime', 'data', 'wallet_balance', 'cashback')
+_WAT = timedelta(hours=1)          # Nigeria time = UTC + 1 (no daylight saving)
+_PERIOD_DAYS = {'today': 0, '7d': 6, '30d': 29}
+
+
+def _period_since(period):
+    """UTC datetime at which the period starts (None = all time).
+    Days start at midnight Nigeria time, so 'today' matches the admin's day."""
+    days = _PERIOD_DAYS.get(period)
+    if days is None:
+        return None
+    now_wat = datetime.utcnow() + _WAT
+    midnight_wat = now_wat.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight_wat - timedelta(days=days) - _WAT
+
+
+def _normalise_period(period):
+    return period if period in ('today', '7d', '30d', 'all') else 'today'
+
+
+def _row_to_dict(r):
+    return {
+        'id': r[0], 'user_id': r[1], 'label': r[2] or '', 'reward_type': r[3] or '',
+        'reward_value': float(r[4] or 0), 'is_free': bool(r[5]),
+        'cost': float(r[6] or 0), 'created_at': r[7],
+    }
+
+
+def _fetch_rows(since, user_id=None):
+    q = db.session.query(
+        SpinEntry.id, SpinEntry.user_id, SpinEntry.label, SpinEntry.reward_type,
+        SpinEntry.reward_value, SpinEntry.is_free_spin, SpinEntry.cost_paid,
+        SpinEntry.created_at,
+    )
+    if since is not None:
+        q = q.filter(SpinEntry.created_at >= since)
+    if user_id:
+        q = q.filter(SpinEntry.user_id == user_id)
+    return [_row_to_dict(r) for r in q.all()]
+
+
+def _bucket(rtype, value):
+    """Which total a reward counts towards: 'money', 'coupon', 'points' or 'none'."""
+    if value <= 0:
+        return 'none'
+    if rtype in MONEY_TYPES:
+        return 'money'
+    if rtype == 'coupon':
+        return 'coupon'
+    if rtype == 'bonus_points':
+        return 'points'
+    return 'none'
+
+
+def build_report(rows, coupons_used_value=0.0, coupons_used_count=0, period='today', now=None):
+    """Summary, per-prize table and daily series from plain row dicts."""
+    now = now or datetime.utcnow()
+    total = len(rows)
+    players = {r['user_id'] for r in rows}
+    free = sum(1 for r in rows if r['is_free'])
+    fees = sum(r['cost'] for r in rows)
+    money = coupon = points = 0.0
+    coupons_issued = 0
+    zero_spins = 0
+    for r in rows:
+        b = _bucket(r['reward_type'], r['reward_value'])
+        if b == 'money':
+            money += r['reward_value']
+        elif b == 'coupon':
+            coupon += r['reward_value']
+            coupons_issued += 1
+        elif b == 'points':
+            points += r['reward_value']
+        else:
+            zero_spins += 1
+
+    summary = {
+        'total_spins':        total,
+        'unique_players':     len(players),
+        'free_spins':         free,
+        'paid_spins':         total - free,
+        'fees_collected':     round(fees, 2),
+        'cash_won':           round(money, 2),
+        'coupons_issued':     coupons_issued,
+        'coupon_value_issued': round(coupon, 2),
+        'coupons_used_count': int(coupons_used_count),
+        'coupons_used_value': round(coupons_used_value, 2),
+        'points_awarded':     int(points),
+        'no_prize_spins':     zero_spins,
+        'avg_spins_per_player': round(total / len(players), 2) if players else 0,
+        # what the feature really cost / earned: fees in, cash + used coupons out
+        'net_result':         round(fees - money - coupons_used_value, 2),
+    }
+
+    # per prize label
+    prizes = {}
+    for r in rows:
+        key = (r['label'], r['reward_type'])
+        p = prizes.setdefault(key, {'label': r['label'], 'reward_type': r['reward_type'],
+                                    'spins': 0, 'total_value': 0.0})
+        p['spins'] += 1
+        p['total_value'] += r['reward_value']
+    by_prize = sorted(prizes.values(), key=lambda p: (-p['spins'], p['label']))[:15]
+    for p in by_prize:
+        p['total_value'] = round(p['total_value'], 2)
+
+    # per day (Nigeria time), last 14 days at most, never before the period start
+    today_wat = (now + _WAT).date()
+    first_day = today_wat - timedelta(days=13)
+    days_in_period = _PERIOD_DAYS.get(period)
+    if days_in_period is not None:
+        first_day = max(first_day, today_wat - timedelta(days=days_in_period))
+    daily = {}
+    d = first_day
+    while d <= today_wat:
+        daily[d] = {'date': d.isoformat(), 'spins': 0, 'players': set(), 'cash_won': 0.0, 'fees': 0.0}
+        d += timedelta(days=1)
+    for r in rows:
+        if not r['created_at']:
+            continue
+        day = (r['created_at'] + _WAT).date()
+        if day in daily:
+            slot = daily[day]
+            slot['spins'] += 1
+            slot['players'].add(r['user_id'])
+            slot['fees'] += r['cost']
+            if _bucket(r['reward_type'], r['reward_value']) == 'money':
+                slot['cash_won'] += r['reward_value']
+    daily_list = [{'date': v['date'], 'spins': v['spins'], 'players': len(v['players']),
+                   'cash_won': round(v['cash_won'], 2), 'fees': round(v['fees'], 2)}
+                  for _, v in sorted(daily.items())]
+
+    return {'summary': summary, 'by_prize': by_prize, 'daily': daily_list}
+
+
+def aggregate_players(rows):
+    """One entry per user: spins, free/paid, cash won, coupons, points, fees, last spin."""
+    agg = {}
+    for r in rows:
+        a = agg.setdefault(r['user_id'], {
+            'user_id': r['user_id'], 'spins': 0, 'free_spins': 0, 'paid_spins': 0,
+            'cash_won': 0.0, 'coupon_value': 0.0, 'points': 0, 'fees_paid': 0.0,
+            'last_spin': None, 'biggest_win': 0.0,
+        })
+        a['spins'] += 1
+        if r['is_free']:
+            a['free_spins'] += 1
+        else:
+            a['paid_spins'] += 1
+        a['fees_paid'] += r['cost']
+        b = _bucket(r['reward_type'], r['reward_value'])
+        if b == 'money':
+            a['cash_won'] += r['reward_value']
+            a['biggest_win'] = max(a['biggest_win'], r['reward_value'])
+        elif b == 'coupon':
+            a['coupon_value'] += r['reward_value']
+        elif b == 'points':
+            a['points'] += int(r['reward_value'])
+        if r['created_at'] and (a['last_spin'] is None or r['created_at'] > a['last_spin']):
+            a['last_spin'] = r['created_at']
+    for a in agg.values():
+        a['cash_won'] = round(a['cash_won'], 2)
+        a['coupon_value'] = round(a['coupon_value'], 2)
+        a['fees_paid'] = round(a['fees_paid'], 2)
+        a['biggest_win'] = round(a['biggest_win'], 2)
+    return list(agg.values())
+
+
+def _sort_players(players, sort):
+    if sort == 'spins':
+        return sorted(players, key=lambda p: (-p['spins'], -p['cash_won']))
+    if sort == 'recent':
+        return sorted(players, key=lambda p: p['last_spin'] or datetime.min, reverse=True)
+    return sorted(players, key=lambda p: (-p['cash_won'], -p['spins']))      # 'won' (default)
+
+
+def _coupons_used(since):
+    q = SpinCouponAward.query.filter(SpinCouponAward.is_used.is_(True))
+    if since is not None:
+        q = q.filter(SpinCouponAward.used_at >= since)
+    used = q.all()
+    return sum(c.discount_amount or 0 for c in used), len(used)
+
+
+def _user_brief(user):
+    return {'name': user.name, 'email': user.email, 'phone': user.phone} if user else \
+        {'name': 'Deleted user', 'email': '', 'phone': ''}
+
+
+def get_admin_report(period='today'):
+    period = _normalise_period(period)
+    since = _period_since(period)
+    rows = _fetch_rows(since)
+    used_value, used_count = _coupons_used(since)
+    report = build_report(rows, used_value, used_count, period)
+    report['period'] = period
+    report['since'] = since.isoformat() if since else None
+
+    # five biggest cash wins in the period
+    wins = sorted((r for r in rows if _bucket(r['reward_type'], r['reward_value']) == 'money'),
+                  key=lambda r: -r['reward_value'])[:5]
+    users = {u.id: u for u in User.query.filter(User.id.in_(list({r['user_id'] for r in wins}))).all()} if wins else {}
+    report['biggest_wins'] = [
+        {'label': r['label'], 'reward_value': round(r['reward_value'], 2),
+         'created_at': r['created_at'].isoformat() if r['created_at'] else None,
+         **_user_brief(users.get(r['user_id']))}
+        for r in wins
+    ]
+    return report
+
+
+def get_admin_players(period='today', sort='won', q='', page=1, per_page=20):
+    period = _normalise_period(period)
+    since = _period_since(period)
+    per_page = max(1, min(per_page, 50))
+    page = max(1, page)
+    players = aggregate_players(_fetch_rows(since))
+
+    q = (q or '').strip()
+    if q:
+        from sqlalchemy import or_
+        like = f'%{q}%'
+        matches = User.query.filter(
+            or_(User.name.ilike(like), User.email.ilike(like), User.phone.ilike(like))
+        ).limit(500).all()
+        ids = {u.id for u in matches}
+        players = [p for p in players if p['user_id'] in ids]
+
+    players = _sort_players(players, sort)
+    total = len(players)
+    pages = (total + per_page - 1) // per_page
+    chunk = players[(page - 1) * per_page: page * per_page]
+    users = {u.id: u for u in User.query.filter(User.id.in_([p['user_id'] for p in chunk])).all()} if chunk else {}
+    out = []
+    for p in chunk:
+        item = dict(p)
+        item['last_spin'] = p['last_spin'].isoformat() if p['last_spin'] else None
+        item.update(_user_brief(users.get(p['user_id'])))
+        out.append(item)
+    return {'players': out, 'total': total, 'pages': pages, 'page': page,
+            'period': period, 'sort': sort}
+
+
+def get_admin_entries(period='today', user_id=None, page=1, per_page=30):
+    period = _normalise_period(period)
+    since = _period_since(period)
+    per_page = max(1, min(per_page, 100))
+    page = max(1, page)
+    q = db.session.query(SpinEntry, User).join(User, User.id == SpinEntry.user_id)
+    if since is not None:
+        q = q.filter(SpinEntry.created_at >= since)
+    if user_id:
+        q = q.filter(SpinEntry.user_id == user_id)
+    total = q.count()
+    rows = q.order_by(SpinEntry.created_at.desc()).limit(per_page).offset((page - 1) * per_page).all()
+    entries = []
+    for e, u in rows:
+        d = e.to_dict()
+        d.update({'user_id': u.id, 'name': u.name, 'email': u.email, 'phone': u.phone,
+                  'ip_address': e.ip_address})
+        entries.append(d)
+    pages = (total + per_page - 1) // per_page
+    return {'entries': entries, 'total': total, 'pages': pages, 'page': page, 'period': period}

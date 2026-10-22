@@ -181,3 +181,38 @@ def user_history(user_id):
         'status': 'success',
         'data': {'entries': rows, 'total': total, 'pages': pages, 'page': page},
     })
+
+
+# ── ADMIN: Spin & Win reporting (who spun, how much they won, how often) ──────
+# ?period=today|7d|30d|all  (days start at midnight Nigeria time)
+
+@spin_admin_bp.route('/report', methods=['GET'])
+@admin_required
+def admin_report():
+    period = request.args.get('period', 'today')
+    return jsonify({'status': 'success', 'data': spin_service.get_admin_report(period)})
+
+
+@spin_admin_bp.route('/players', methods=['GET'])
+@admin_required
+def admin_players():
+    data = spin_service.get_admin_players(
+        period=request.args.get('period', 'today'),
+        sort=request.args.get('sort', 'won'),          # won | spins | recent
+        q=request.args.get('q', ''),                   # search name / email / phone
+        page=request.args.get('page', 1, type=int),
+        per_page=request.args.get('per_page', 20, type=int),
+    )
+    return jsonify({'status': 'success', 'data': data})
+
+
+@spin_admin_bp.route('/entries', methods=['GET'])
+@admin_required
+def admin_entries():
+    data = spin_service.get_admin_entries(
+        period=request.args.get('period', 'today'),
+        user_id=request.args.get('user_id', type=int),
+        page=request.args.get('page', 1, type=int),
+        per_page=request.args.get('per_page', 30, type=int),
+    )
+    return jsonify({'status': 'success', 'data': data})
