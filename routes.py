@@ -1,14 +1,14 @@
 # routes.py — VTU service routes for Cheap4U
 # This file was MISSING — its absence caused ALL VTU purchases to return 404.
-# Providers: CheapDataHub (airtime/data/electricity/cable_tv) + VtuNaija (exam pins)
-# Drop this file in the same folder as app.py, cheapdatahub.py, and vtunaija.py.
+# Provider: CheapDataHub for everything (airtime, data, electricity, cable TV, exam pins)
+# Drop this file in the same folder as app.py and cheapdatahub.py.
 
 import logging
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, User, Transaction
-from cheapdatahub import buy_airtime, buy_data, buy_electricity, buy_cable_tv
-from vtunaija import buy_exam_pin
+from cheapdatahub import (buy_airtime, buy_data, buy_electricity, buy_cable_tv,
+                          buy_exam_pin, get_exam_prices, EXAM_ALLOWED_QUANTITIES)
 
 logger = logging.getLogger(__name__)
 
@@ -228,12 +228,29 @@ def cable_tv():
 
 # ─── EXAM PINS ────────────────────────────────────────────────────────────────
 
+@bp.route('/exam-pins/prices', methods=['GET'])
+@jwt_required()
+def exam_pin_prices():
+    """
+    GET /api/vtpass/exam-pins/prices
+    Live per-PIN prices (provider price + our margin), which exams are
+    available right now, and the quantities that can be bought (1, 2 or 5).
+    """
+    data, error = get_exam_prices()
+    if error:
+        return jsonify({'status': 'error', 'message': error}), 503
+    return jsonify({'status': 'success', 'data': data}), 200
+
+
 @bp.route('/exam-pins', methods=['POST'])
 @jwt_required()
 def exam_pins():
     """
     POST /api/vtpass/exam-pins
-    Body: { exam_type, quantity, selling_price, pin, user_email }
+    Body: { exam_type, quantity (1|2|5), selling_price (what the app showed), pin, coupon_code }
+    The amount charged is always worked out on the server from the live provider
+    price; selling_price is only checked against it so the user is never charged
+    something different from what they saw.
     """
     user, err = _get_user()
     if err:
@@ -258,17 +275,10 @@ def exam_pins():
     if exam_type not in ('WAEC', 'NECO', 'NABTEB', 'JAMB'):
         return jsonify({'status': 'error',
                         'message': 'exam_type must be WAEC, NECO, NABTEB, or JAMB'}), 400
-    if quantity < 1 or quantity > 10:
-        return jsonify({'status': 'error', 'message': 'Quantity must be between 1 and 10'}), 400
-    if selling_price is None:
-        return jsonify({'status': 'error', 'message': 'selling_price is required'}), 400
+    if quantity not in EXAM_ALLOWED_QUANTITIES:
+        return jsonify({'status': 'error', 'message': 'You can buy 1, 2 or 5 PINs at a time'}), 400
 
-    try:
-        selling_price = float(selling_price)
-    except (TypeError, ValueError):
-        return jsonify({'status': 'error', 'message': 'Invalid selling_price'}), 400
-
-    logger.info(f"[ExamPIN] user={user.id} exam={exam_type} qty={quantity} price={selling_price}")
+    logger.info(f"[ExamPIN] user={user.id} exam={exam_type} qty={quantity} shown_price={selling_price}")
     result = buy_exam_pin(exam_type, quantity, user.email, selling_price=selling_price, coupon_code=coupon_code)
 
     if result.get('status') == 'success':

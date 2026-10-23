@@ -92,6 +92,29 @@ def promote_to_admin():
     return jsonify({'status': 'success', 'message': f'{email} is now admin'})
 
 
+@admin_bp.route('/exam-pin/products', methods=['GET'])
+@admin_required
+def exam_pin_products():
+    """
+    GET /api/admin/exam-pin/products
+    Diagnostics for the CheapDataHub exam-PIN integration: the provider's raw
+    products reply, the product picked for each exam, and the price users pay.
+    """
+    from cheapdatahub import (cheapdatahub_request, normalize_exam_products, _exam_overrides,
+                              exam_unit_selling_price, PROFIT_MARGIN_EXAM_PIN)
+    raw = cheapdatahub_request("exam-pin/products/", method="GET", timeout=20)
+    chosen = normalize_exam_products(raw, _exam_overrides())
+    return jsonify({
+        'status': 'success',
+        'data': {
+            'margin_percent': PROFIT_MARGIN_EXAM_PIN,
+            'chosen': {e: {**p, 'user_price_per_pin': exam_unit_selling_price(p['unit_cost'])}
+                       for e, p in chosen.items()},
+            'raw_provider_reply': raw,
+        },
+    })
+
+
 @admin_bp.route('/users', methods=['GET'])
 @admin_required
 def get_all_users():

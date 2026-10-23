@@ -87,11 +87,11 @@ def cheapdatahub_request(endpoint, method="POST", data=None, timeout=30):
         logger.info(f"CheapDataHub Response: {result}")
         return result
     except requests.exceptions.Timeout:
-        return {"status": "false", "message": "Request timed out"}
+        return {"status": "false", "message": "Request timed out", "_transport_error": True}
     except requests.exceptions.ConnectionError:
-        return {"status": "false", "message": "Network connection error"}
+        return {"status": "false", "message": "Network connection error", "_transport_error": True}
     except Exception as e:
-        return {"status": "false", "message": f"Request error: {str(e)}"}
+        return {"status": "false", "message": f"Request error: {str(e)}", "_transport_error": True}
 
 
 def _is_success(api_result):
@@ -511,3 +511,331 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone="", coupon_code=None):
         transaction.details["error"] = error_msg
         db.session.commit()
         return {"status": "error", "message": error_msg}
+
+
+# ── EXAM PINS (WAEC / NECO / NABTEB / JAMB) ───────────────────────────────────
+#
+# Official CheapDataHub flow (https://www.cheapdatahub.ng/api_documentation/):
+#   GET  exam-pin/products/   -> active products + your reseller price
+#   POST exam-pin/purchase/   -> {"product_id": <int>, "quantity": 1 | 2 | 5}
+#     reply: {"status": "true", "data": {"transaction": {"amount": 3400},
+#             "delivery": {"exam_name": "WAEC", "quantity": 1,
+#                          "pins": ["<pin><=><serial>", ...]}}}
+#
+# Product IDs and prices come from the provider, so they are looked up live
+# (and cached briefly) instead of being hard-coded. The docs don't show the
+# exact shape of the products reply, so the parser below is deliberately
+# tolerant; GET /api/admin/exam-pin/products shows the raw reply and which
+# product was picked for each exam. To pin a product explicitly, set
+#   CHEAPDATAHUB_EXAM_PRODUCT_IDS="WAEC=1,NECO=2,NABTEB=3,JAMB=4"
+
+import math
+
+PROFIT_MARGIN_EXAM_PIN = float(os.environ.get("PROFIT_MARGIN_EXAM_PIN", "10"))
+EXAM_TYPES = ("WAEC", "NECO", "NABTEB", "JAMB")
+EXAM_ALLOWED_QUANTITIES = (1, 2, 5)           # the only quantities the provider accepts
+_EXAM_CACHE_SECONDS = 120
+_exam_cache = {"at": 0.0, "products": None}
+
+
+def _first_list_of_dicts(obj, depth=0):
+    """Find the first list of dicts anywhere in an API reply (the products)."""
+    if depth > 4:
+        return None
+    if isinstance(obj, list):
+        if obj and all(isinstance(x, dict) for x in obj):
+            return obj
+        for x in obj:
+            found = _first_list_of_dicts(x, depth + 1)
+            if found:
+                return found
+    elif isinstance(obj, dict):
+        for key in ("data", "products", "results", "items", "exam_pins", "exam_pin_products"):
+            if key in obj:
+                found = _first_list_of_dicts(obj[key], depth + 1)
+                if found:
+                    return found
+        for value in obj.values():
+            found = _first_list_of_dicts(value, depth + 1)
+            if found:
+                return found
+    return None
+
+
+def _pick(d, keys):
+    for k in keys:
+        if k in d and d[k] is not None and d[k] != "":
+            return d[k]
+    return None
+
+
+def _to_float(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    cleaned = "".join(ch for ch in str(value) if ch.isdigit() or ch == ".")
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None
+
+
+def _exam_overrides():
+    """CHEAPDATAHUB_EXAM_PRODUCT_IDS='WAEC=1,NECO=2' -> {'WAEC': 1, 'NECO': 2}."""
+    out = {}
+    for part in os.environ.get("CHEAPDATAHUB_EXAM_PRODUCT_IDS", "").split(","):
+        if "=" in part:
+            name, _, pid = part.partition("=")
+            try:
+                out[name.strip().upper()] = int(pid.strip())
+            except ValueError:
+                pass
+    return out
+
+
+def normalize_exam_products(api_result, overrides=None):
+    """
+    Turn the provider's products reply into {exam: {product_id, name, unit_cost}}.
+    unit_cost is what CheapDataHub charges YOUR wallet per PIN.
+    """
+    overrides = overrides or {}
+    items = _first_list_of_dicts(api_result) or []
+    candidates = {}            # exam -> [(score, product)]
+    for it in items:
+        try:
+            pid = int(_pick(it, ("id", "product_id", "pk")))
+        except (TypeError, ValueError):
+            continue
+        active = _pick(it, ("is_active", "active", "enabled", "available"))
+        if active is not None and str(active).strip().lower() in ("false", "0", "no", "none"):
+            continue
+        name_fields = [str(it[k]) for k in ("name", "title", "product_name", "exam_name", "exam", "type", "label")
+                       if k in it and it[k] is not None]
+        name_text = " ".join(name_fields).upper()
+        all_text = " ".join(str(v) for v in it.values() if isinstance(v, str)).upper()
+        exam = next((e for e in EXAM_TYPES if e in name_text), None) or \
+               next((e for e in EXAM_TYPES if e in all_text), None)
+        if not exam:
+            continue
+        unit_cost = _to_float(_pick(it, ("price", "amount", "reseller_price", "selling_price",
+                                         "unit_price", "cost", "rate")))
+        if not unit_cost or unit_cost <= 0:
+            continue
+        # prefer the plain "result checker" PIN over registration/GCE/verification variants
+        score = 2 if ("RESULT" in name_text or "CHECKER" in name_text) else \
+                (0 if any(w in name_text for w in ("REGISTRATION", "GCE", "VERIFICATION")) else 1)
+        product = {"product_id": pid, "name": (name_fields[0] if name_fields else exam),
+                   "unit_cost": unit_cost}
+        candidates.setdefault(exam, []).append((score, product))
+
+    out = {}
+    for exam, options in candidates.items():
+        forced = overrides.get(exam)
+        if forced is not None:
+            match = next((p for _, p in options if p["product_id"] == forced), None)
+            if match:
+                out[exam] = match
+                continue
+        out[exam] = max(options, key=lambda sp: sp[0])[1]
+    return out
+
+
+def get_exam_products(force=False):
+    """(products_by_exam, error_message). Cached for a couple of minutes."""
+    now = time.time()
+    if not force and _exam_cache["products"] is not None and now - _exam_cache["at"] < _EXAM_CACHE_SECONDS:
+        return _exam_cache["products"], None
+    result = cheapdatahub_request("exam-pin/products/", method="GET", timeout=20)
+    if not _is_success(result) and not _first_list_of_dicts(result):
+        return None, result.get("message") or "Couldn't load exam PIN prices"
+    products = normalize_exam_products(result, _exam_overrides())
+    if not products:
+        return None, "No exam PIN products are available right now"
+    _exam_cache["products"], _exam_cache["at"] = products, now
+    return products, None
+
+
+def exam_unit_selling_price(unit_cost):
+    """Price per PIN charged to the user: provider cost + your margin, rounded up to the naira."""
+    return int(math.ceil(round(unit_cost * (1 + PROFIT_MARGIN_EXAM_PIN / 100.0), 2)))
+
+
+def get_exam_prices():
+    """What the app shows on the exam screen."""
+    products, error = get_exam_products()
+    if error:
+        return None, error
+    prices = {e: exam_unit_selling_price(p["unit_cost"]) for e, p in products.items()}
+    return {
+        "prices": prices,
+        "available": {e: (e in prices) for e in EXAM_TYPES},
+        "quantities": list(EXAM_ALLOWED_QUANTITIES),
+    }, None
+
+
+def parse_exam_pins(delivery):
+    """['<pin><=><serial>', ...] -> [{'pin': ..., 'serial': ...}, ...]."""
+    out = []
+    raw_pins = delivery if isinstance(delivery, list) else ((delivery or {}).get("pins", []) or [])
+    for raw in raw_pins:
+        text = str(raw).strip()
+        if not text:
+            continue
+        if "<=>" in text:
+            a, _, b = text.partition("<=>")
+            a, b = a.strip(), b.strip()
+            # the serial number is the one that starts with letters (e.g. WRN...)
+            if a.isdigit() or not b:
+                pin, serial = a, (b or None)
+            elif b.isdigit():
+                pin, serial = b, a
+            else:
+                pin, serial = a, b
+        else:
+            pin, serial = text, None
+        out.append({"pin": pin, "serial": serial})
+    return out
+
+
+def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_code=None):
+    """
+    Buy WAEC / NECO / NABTEB / JAMB PINs through CheapDataHub.
+    quantity must be 1, 2 or 5 (provider rule). The price is ALWAYS worked out
+    here from the provider's live price; selling_price (what the app showed) is
+    only used to make sure the user isn't charged something different.
+    """
+    exam_name = str(exam_name or "").upper().strip()
+    if exam_name not in EXAM_TYPES:
+        return {"status": "error", "message": "Unsupported exam type. Use WAEC, NECO, NABTEB or JAMB"}
+    try:
+        quantity = int(quantity)
+    except (TypeError, ValueError):
+        return {"status": "error", "message": "Invalid quantity"}
+    if quantity not in EXAM_ALLOWED_QUANTITIES:
+        return {"status": "error", "message": "You can buy 1, 2 or 5 PINs at a time"}
+
+    products, error = get_exam_products(force=True)
+    if error:
+        return {"status": "error", "message": f"{error}. Please try again shortly."}
+    product = products.get(exam_name)
+    if not product:
+        return {"status": "error", "message": f"{exam_name} PINs are not available right now"}
+
+    unit_sell = exam_unit_selling_price(product["unit_cost"])
+    selling_total = float(unit_sell * quantity)
+    if selling_price is not None:
+        try:
+            shown = float(selling_price)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid selling price"}
+        if abs(shown - selling_total) > 1:
+            return {"status": "error", "code": "price_changed",
+                    "message": f"The price has changed to ₦{selling_total:,.0f}. "
+                               f"Please reopen the exam screen to see the new price.",
+                    "data": {"price": selling_total}}
+
+    user = User.query.filter_by(email=user_email).with_for_update().first()
+    if not user:
+        return {"status": "error", "message": "User not found"}
+
+    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
+        user, coupon_code, "exam_pin", selling_total)
+    if coupon_error:
+        return {"status": "error", "message": coupon_error}
+    charge_amount = round(selling_total - (discount or 0), 2)
+
+    if user.wallet_balance < charge_amount:
+        return {"status": "error", "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
+
+    reference = _make_reference("EXAM", user.id)
+    transaction = Transaction(
+        user_id=user.id, reference=reference, type="exam_pin", service_type="exam_pin",
+        amount=charge_amount, profit=0.0, status="pending",
+        details={"exam_name": exam_name, "product_id": product["product_id"], "quantity": quantity,
+                 "selling_price": selling_total,
+                 "coupon_code": applied_coupon.code if applied_coupon else None,
+                 "discount_amount": discount or 0, "provider": "cheapdatahub"},
+    )
+    db.session.add(transaction)
+    db.session.commit()
+
+    api_result = cheapdatahub_request(
+        "exam-pin/purchase/", data={"product_id": product["product_id"], "quantity": quantity}, timeout=45)
+
+    if _is_success(api_result):
+        data = api_result.get("data") or {}
+        pins = parse_exam_pins(data.get("delivery"))
+        if not pins:
+            # Provider charged us but we couldn't read the PINs: never lose them silently.
+            transaction.status = "pending"
+            transaction.details.update({"error": "PINs not readable in provider reply",
+                                        "provider_reply": api_result})
+            db.session.commit()
+            logger.error(f"[ExamPIN] {reference} succeeded at provider but no pins parsed: {api_result}")
+            return {"status": "error",
+                    "message": "Your purchase went through but the PINs couldn't be displayed. "
+                               "Please contact support with reference " + reference}
+
+        cost_price = _to_float((data.get("transaction") or {}).get("amount")) or round(product["unit_cost"] * quantity, 2)
+        profit_amount = round(charge_amount - cost_price, 2)
+
+        user.wallet_balance -= charge_amount
+        transaction.status = "success"
+        transaction.profit = profit_amount
+        transaction.details.update({
+            "cost_price": round(cost_price, 2),
+            "pins": pins,
+            "pin": pins[0]["pin"], "serial": pins[0]["serial"],
+        })
+        db.session.add(Profit(transaction_id=transaction.id, user_id=user.id,
+                              category="exam_pin", amount=profit_amount))
+        if applied_coupon:
+            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="exam_pin")
+        record_purchase(transaction)
+        award_cashback(transaction)
+        gamification_service.record_activity(transaction)
+        db.session.commit()
+
+        logger.info(f"[ExamPIN] SUCCESS {reference} {exam_name} x{quantity} | cost=₦{cost_price} profit=₦{profit_amount}")
+        return {
+            "status": "success",
+            "message": f"{exam_name} PIN purchase successful",
+            "data": {
+                "reference":       reference,
+                "exam_name":       exam_name,
+                "quantity":        quantity,
+                "pins":            pins,
+                "pin":             pins[0]["pin"],          # first PIN (older app versions)
+                "serial":          pins[0]["serial"],
+                "profit_amount":   profit_amount,
+                "selling_price":   selling_total,
+                "discount_amount": discount or 0,
+                "amount_charged":  charge_amount,
+                "new_balance":     round(user.wallet_balance, 2),
+            },
+        }
+
+    # ── not successful ─────────────────────────────────────────────────
+    provider_msg = api_result.get("message") or "Exam PIN purchase failed"
+    if api_result.get("_transport_error"):
+        # No answer at all: the PIN may or may not have been bought. Keep it
+        # PENDING (not failed) so it can be checked against CheapDataHub's
+        # transactions list, and don't charge the user.
+        transaction.status = "pending"
+        transaction.details["error"] = provider_msg
+        db.session.commit()
+        logger.error(f"[ExamPIN] NO ANSWER {reference}: {provider_msg}")
+        return {"status": "error",
+                "message": "We couldn't confirm your purchase. You have not been charged. "
+                           "If you need help, contact support with reference " + reference}
+
+    transaction.status = "failed"
+    transaction.details["error"] = provider_msg
+    db.session.commit()
+    logger.error(f"[ExamPIN] FAILED {reference} | {provider_msg}")
+    lowered = provider_msg.lower()
+    if "insufficient" in lowered or "balance" in lowered:
+        # that's OUR wallet at the provider - don't expose it to the customer
+        provider_msg = "This service is temporarily unavailable. Please try again later."
+    return {"status": "error", "message": provider_msg}

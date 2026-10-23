@@ -172,10 +172,9 @@ def authenticate_api_key(api_key):
 
 def _dispatch_single(job_type, item, user):
     """Calls the real purchase function for one row. Imported lazily to
-    avoid any import-order issues between merchant.py and cheapdatahub.py/
-    vtunaija.py at module load time."""
-    from cheapdatahub import buy_airtime, buy_data, buy_electricity, buy_cable_tv
-    from vtunaija import buy_exam_pin
+    avoid any import-order issues between merchant.py and cheapdatahub.py
+    at module load time."""
+    from cheapdatahub import buy_airtime, buy_data, buy_electricity, buy_cable_tv, buy_exam_pin
 
     if job_type == 'airtime':
         return buy_airtime(item.get('network'), item.get('phone'), float(item.get('amount', 0)), user.email)
@@ -187,8 +186,11 @@ def _dispatch_single(job_type, item, user):
     if job_type == 'cable_tv':
         return buy_cable_tv(item.get('plan_id'), item.get('smartcard'), user.email, phone=item.get('phone', ''))
     if job_type == 'exam_pin':
+        # CheapDataHub exam PINs: quantity must be 1, 2 or 5, and the price is the
+        # live provider price + margin (worked out by buy_exam_pin) - any
+        # selling_price column in the upload is ignored.
         return buy_exam_pin(item.get('exam_name'), item.get('quantity', 1), user.email,
-                             selling_price=item.get('selling_price'))
+                             selling_price=None)
     return {'status': 'error', 'message': f'Unknown job_type: {job_type}'}
 
 
