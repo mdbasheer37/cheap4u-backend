@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 # They are applied automatically at boot (see _init_db_and_extras) and are all
 # idempotent; /api/debug/add-pin-columns still exists and runs the same list.
 AUTH_COLUMN_MIGRATIONS = [
+    # Speeds up the History screen: it filters by user and sorts by newest first.
+    "CREATE INDEX IF NOT EXISTS ix_transactions_user_created ON transactions (user_id, created_at)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_hash VARCHAR(200)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_set_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_pin_failed_attempts INTEGER NOT NULL DEFAULT 0",
