@@ -72,8 +72,8 @@ class MerchantProfile(db.Model):
 class MerchantBulkJob(db.Model):
     """One batch upload — e.g. 200 airtime top-ups submitted in one CSV.
     Each row is processed through the exact same buy_* functions as a
-    normal single purchase, so wallet deduction, profit tracking, cashback
-    and coupons all behave identically — this table just tracks the batch."""
+    normal single purchase, so wallet deduction, profit tracking and cashback
+    all behave identically — this table just tracks the batch."""
     __tablename__ = 'merchant_bulk_jobs'
 
     id                    = db.Column(db.Integer, primary_key=True)

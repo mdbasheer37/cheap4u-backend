@@ -1,10 +1,10 @@
 # merchant.py — Merchant Dashboard: core business logic
 #
-# Self-contained, following the same shape as cashback.py / spin.py /
-# coupon.py. Bulk purchases are NOT a separate money rail — each row calls
+# Self-contained, following the same shape as cashback.py / spin.py.
+# Bulk purchases are NOT a separate money rail — each row calls
 # the exact same buy_airtime/buy_data/buy_electricity/buy_cable_tv/
 # buy_exam_pin functions used everywhere else in the app, so wallet
-# deduction, Transaction/Profit records, cashback and coupons all behave
+# deduction, Transaction/Profit records, and cashback all behave
 # identically to a normal single purchase. This file only orchestrates the
 # batch and tracks outcomes.
 

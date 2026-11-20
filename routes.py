@@ -73,7 +73,6 @@ def airtime():
     network = (data.get('network') or '').strip()
     phone   = (data.get('phone') or '').strip()
     pin     = (data.get('pin') or '').strip()
-    coupon_code = (data.get('coupon_code') or '').strip() or None
 
     try:
         amount = float(data.get('amount', 0))
@@ -95,7 +94,7 @@ def airtime():
         return jsonify({'status': 'error', 'message': 'Minimum airtime amount is ₦50'}), 400
 
     logger.info(f"[Airtime] user={user.id} network={network} phone={phone} amount={amount}")
-    result = buy_airtime(network, phone, amount, user.email, coupon_code=coupon_code)
+    result = buy_airtime(network, phone, amount, user.email)
 
     if result.get('status') == 'success':
         return jsonify(result), 200
@@ -119,7 +118,6 @@ def data_purchase():
     plan_id = data.get('plan_id')
     phone   = (data.get('phone') or '').strip()
     pin     = (data.get('pin') or '').strip()
-    coupon_code = (data.get('coupon_code') or '').strip() or None
 
     pin_ok, pin_err = _verify_pin(user, pin)
     if not pin_ok:
@@ -132,7 +130,7 @@ def data_purchase():
         return jsonify({'status': 'error', 'message': 'Invalid phone number (must be 11 digits)'}), 400
 
     logger.info(f"[Data] user={user.id} plan_id={plan_id} phone={phone}")
-    result = buy_data(plan_id, phone, user.email, coupon_code=coupon_code)
+    result = buy_data(plan_id, phone, user.email)
 
     if result.get('status') == 'success':
         return jsonify(result), 200
@@ -158,7 +156,6 @@ def electricity():
     meter_type = (data.get('meter_type') or '').strip()
     phone      = (data.get('phone') or '').strip()
     pin        = (data.get('pin') or '').strip()
-    coupon_code = (data.get('coupon_code') or '').strip() or None
 
     try:
         amount = float(data.get('amount', 0))
@@ -182,7 +179,7 @@ def electricity():
         return jsonify({'status': 'error', 'message': 'Invalid phone number (must be 11 digits)'}), 400
 
     logger.info(f"[Electricity] user={user.id} disco={disco} meter={meter_num} amount={amount}")
-    result = buy_electricity(disco, meter_num, meter_type, amount, phone, user.email, coupon_code=coupon_code)
+    result = buy_electricity(disco, meter_num, meter_type, amount, phone, user.email)
 
     if result.get('status') == 'success':
         return jsonify(result), 200
@@ -206,7 +203,6 @@ def cable_tv():
     plan_id   = data.get('plan_id')
     smartcard = (data.get('smartcard') or '').strip()
     pin       = (data.get('pin') or '').strip()
-    coupon_code = (data.get('coupon_code') or '').strip() or None
 
     pin_ok, pin_err = _verify_pin(user, pin)
     if not pin_ok:
@@ -219,7 +215,7 @@ def cable_tv():
         return jsonify({'status': 'error', 'message': 'Invalid smartcard/IUC number (minimum 6 characters)'}), 400
 
     logger.info(f"[CableTV] user={user.id} plan_id={plan_id} smartcard={smartcard}")
-    result = buy_cable_tv(plan_id, smartcard, user.email, coupon_code=coupon_code)
+    result = buy_cable_tv(plan_id, smartcard, user.email)
 
     if result.get('status') == 'success':
         return jsonify(result), 200
@@ -247,7 +243,7 @@ def exam_pin_prices():
 def exam_pins():
     """
     POST /api/vtpass/exam-pins
-    Body: { exam_type, quantity (1|2|5), selling_price (what the app showed), pin, coupon_code }
+    Body: { exam_type, quantity (1|2|5), selling_price (what the app showed), pin }
     The amount charged is always worked out on the server from the live provider
     price; selling_price is only checked against it so the user is never charged
     something different from what they saw.
@@ -260,7 +256,6 @@ def exam_pins():
     exam_type     = (data.get('exam_type') or '').strip().upper()
     pin           = (data.get('pin') or '').strip()
     selling_price = data.get('selling_price')
-    coupon_code   = (data.get('coupon_code') or '').strip() or None
 
     try:
         quantity = int(data.get('quantity', 0))
@@ -279,7 +274,7 @@ def exam_pins():
         return jsonify({'status': 'error', 'message': 'You can buy 1, 2 or 5 PINs at a time'}), 400
 
     logger.info(f"[ExamPIN] user={user.id} exam={exam_type} qty={quantity} shown_price={selling_price}")
-    result = buy_exam_pin(exam_type, quantity, user.email, selling_price=selling_price, coupon_code=coupon_code)
+    result = buy_exam_pin(exam_type, quantity, user.email, selling_price=selling_price)
 
     if result.get('status') == 'success':
         return jsonify(result), 200

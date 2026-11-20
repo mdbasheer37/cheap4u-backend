@@ -47,10 +47,10 @@ class SpinSegment(db.Model):
 
     id             = db.Column(db.Integer, primary_key=True)
     label          = db.Column(db.String(60), nullable=False)
-    # 'airtime' | 'data' | 'cashback' | 'wallet_balance' | 'coupon' | 'bonus_points'
+    # 'airtime' | 'data' | 'cashback' | 'wallet_balance' | 'bonus_points'
     reward_type    = db.Column(db.String(20), nullable=False)
     # Meaning depends on reward_type: naira amount (airtime/data/wallet_balance/
-    # cashback/coupon discount) or point count (bonus_points).
+    # cashback) or point count (bonus_points).
     reward_value   = db.Column(db.Float, nullable=False, default=0.0)
 
     weight         = db.Column(db.Integer, default=10)     # relative odds
@@ -139,30 +139,3 @@ class UserPoints(db.Model):
 
     def to_dict(self):
         return {'points_balance': self.balance or 0}
-
-
-class SpinCouponAward(db.Model):
-    """A single-use fixed-discount coupon personally awarded to one user by
-    the wheel. Kept in its own table (rather than bolted onto a shared
-    'coupons' table) so it doesn't collide with the standalone Coupon
-    System feature when that's built — the two can be merged later without
-    a data migration risk today."""
-    __tablename__ = 'spin_coupon_awards'
-
-    id             = db.Column(db.Integer, primary_key=True)
-    user_id        = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    code           = db.Column(db.String(20), unique=True, nullable=False)
-    discount_amount = db.Column(db.Float, nullable=False)
-    is_used        = db.Column(db.Boolean, default=False)
-    expires_at     = db.Column(db.DateTime, nullable=True)
-    used_at        = db.Column(db.DateTime, nullable=True)
-    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
-
-    def to_dict(self):
-        return {
-            'code':            self.code,
-            'discount_amount': round(self.discount_amount, 2),
-            'is_used':         self.is_used,
-            'expires_at':      self.expires_at.isoformat() if self.expires_at else None,
-            'created_at':      self.created_at.isoformat() if self.created_at else None,
-        }

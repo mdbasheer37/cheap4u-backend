@@ -14,7 +14,6 @@ from models import db, User, Transaction, Profit
 from challenge import record_purchase
 from cashback import award_cashback
 import gamification as gamification_service
-import coupon as coupon_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,12 +66,12 @@ def _is_success(api_result):
     return status in ("successful", "success", "true")
 
 
-def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_code=None):
+def buy_exam_pin(exam_name, quantity, user_email, selling_price=None):
     """
     Purchase exam PIN via VtuNaija.
     exam_name: WAEC | NECO | NABTEB | JAMB
     quantity:  1–10
-    selling_price: total amount charged to user's wallet (before any coupon discount)
+    selling_price: total amount charged to user's wallet 
     """
     # 1. Validate inputs
     exam_name = str(exam_name).upper().strip()
@@ -103,12 +102,7 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_cod
     if not user:
         return {"status": "error", "message": "User not found"}
 
-    # 2b. Apply coupon (if any) before checking the wallet
-    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
-        user, coupon_code, "exam_pin", selling_price)
-    if coupon_error:
-        return {"status": "error", "message": coupon_error}
-    charge_amount = round(selling_price - (discount or 0), 2)
+    charge_amount = round(selling_price, 2)
 
     # 3. Check wallet
     if user.wallet_balance < charge_amount:
@@ -122,9 +116,7 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_cod
         user_id=user.id, reference=reference, type="exam_pin",
         service_type="exam_pin", amount=charge_amount, profit=0.0,
         status="pending", details={"exam_name": exam_name, "exam_id": exam_id, "quantity": quantity,
-                                    "selling_price": selling_price,
-                                    "coupon_code": applied_coupon.code if applied_coupon else None,
-                                    "discount_amount": discount or 0},
+                                    "selling_price": selling_price},
     )
     db.session.add(transaction)
     db.session.commit()
@@ -154,8 +146,6 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_cod
             transaction_id=transaction.id, user_id=user.id,
             category="exam_pin", amount=profit_amount,
         ))
-        if applied_coupon:
-            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="exam_pin")
         record_purchase(transaction)
         award_cashback(transaction)
         gamification_service.record_activity(transaction)
@@ -172,7 +162,6 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_cod
                 "serial":             api_result.get("serial"),
                 "profit_amount":      profit_amount,
                 "selling_price":      selling_price,
-                "discount_amount":    discount or 0,
                 "amount_charged":     charge_amount,
                 "new_balance":        round(user.wallet_balance, 2),
             },

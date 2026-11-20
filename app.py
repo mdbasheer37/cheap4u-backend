@@ -128,15 +128,6 @@ def create_app():
     except Exception as e:
         logger.warning(f'spin_routes.py not loaded — spin feature disabled: {e}')
 
-    # Coupon System
-    try:
-        from coupon_routes import coupon_bp, coupon_admin_bp
-        app.register_blueprint(coupon_bp)
-        app.register_blueprint(coupon_admin_bp)
-        logger.info('Coupon System blueprints loaded')
-    except Exception as e:
-        logger.warning(f'coupon_routes.py not loaded — coupon feature disabled: {e}')
-
     # Merchant Dashboard
     try:
         from merchant_routes import merchant_bp, merchant_admin_bp, merchant_api_bp

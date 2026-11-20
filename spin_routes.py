@@ -12,7 +12,6 @@ from models import db, User
 from admin import admin_required
 from extensions import limiter
 import spin as spin_service
-from spin_models import SpinCouponAward
 
 logger = logging.getLogger(__name__)
 
@@ -74,20 +73,6 @@ def history():
         'status': 'success',
         'data': {'entries': rows, 'total': total, 'pages': pages, 'page': page},
     })
-
-
-@spin_bp.route('/coupons', methods=['GET'])
-@jwt_required()
-def my_coupons():
-    """Coupons this user has personally won from the wheel."""
-    user_id = _current_user_id()
-    rows = (
-        SpinCouponAward.query
-        .filter_by(user_id=user_id)
-        .order_by(SpinCouponAward.created_at.desc())
-        .all()
-    )
-    return jsonify({'status': 'success', 'data': [r.to_dict() for r in rows]})
 
 
 # ── ADMIN ─────────────────────────────────────────────────────────────────────

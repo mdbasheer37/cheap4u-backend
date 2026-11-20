@@ -1,7 +1,7 @@
 # price_comparison.py — Smart Price Comparison: core logic
 #
 # Reads live data every call — DataPlan prices, recent Transaction outcomes
-# for speed/reliability, and active Coupon rows for promotions — rather
+# for speed/reliability — rather
 # than maintaining a separate cached/duplicated dataset, so results can
 # never drift out of sync with what a purchase would actually cost.
 #
@@ -10,13 +10,12 @@
 # per-network), so there is no real airtime PRICE to compare across
 # networks. compare_airtime() reflects that plainly instead of inventing
 # a fake price difference — the real differentiators are speed,
-# reliability, and any active promo.
+# and reliability.
 
 import re
 from datetime import datetime, timedelta
 
 from models import db, DataPlan, Transaction
-from coupon_models import Coupon
 from comparison_models import ComparisonConfig
 
 AIRTIME_NETWORKS = ('MTN', 'Glo', 'Airtel', '9Mobile')   # kept in sync with cheapdatahub.provider_map
@@ -93,28 +92,6 @@ def _provider_stats(category, provider_field_value, field_name, cfg):
     return {'sample_size': len(matched), 'success_rate': success_rate, 'avg_processing_time_ms': avg_time}
 
 
-def _active_promotions(category):
-    now = datetime.utcnow()
-    coupons = Coupon.query.filter(Coupon.is_active.is_(True)).all()
-    result = []
-    for c in coupons:
-        if c.starts_at and now < c.starts_at:
-            continue
-        if c.expires_at and now > c.expires_at:
-            continue
-        if c.specific_user_id is not None:
-            continue  # personal coupons aren't a public "promotion" to advertise
-        if c.applicable_categories:
-            allowed = [x.strip() for x in c.applicable_categories.split(',') if x.strip()]
-            if allowed and category not in allowed:
-                continue
-        result.append({
-            'code': c.code, 'discount_type': c.discount_type, 'discount_value': c.discount_value,
-            'min_transaction_amount': c.min_transaction_amount,
-        })
-    return result
-
-
 # ── data plan comparison ─────────────────────────────────────────────────────
 
 def compare_data_plans(plan_type=None):
@@ -174,7 +151,6 @@ def compare_data_plans(plan_type=None):
         'cheapest_plan': cheapest,
         'fastest_provider': fastest_provider,
         'best_value_plan': best_value,
-        'promotions': _active_promotions('data'),
     }
 
 
@@ -216,5 +192,4 @@ def compare_airtime():
         'networks': rows,
         'fastest_network': fastest['network'] if fastest else None,
         'most_reliable_network': most_reliable['network'] if most_reliable else None,
-        'promotions': _active_promotions('airtime'),
     }

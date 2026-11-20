@@ -19,7 +19,6 @@ from models import db, User, Transaction, Profit, DataPlan, CablePlan, ReferralT
 from challenge import record_purchase
 from cashback import award_cashback
 import gamification as gamification_service
-import coupon as coupon_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -121,7 +120,7 @@ def _award_referral_commission(user, selling_price):
 
 
 # ── AIRTIME ────────────────────────────────────────────────────────────────────
-def buy_airtime(network, phone, amount, user_email, coupon_code=None):
+def buy_airtime(network, phone, amount, user_email):
     if not phone or len(str(phone)) != 11 or not str(phone).isdigit():
         return {"status": "error", "message": "Invalid phone number. Must be 11 digits."}
     if amount <= 0:
@@ -139,11 +138,7 @@ def buy_airtime(network, phone, amount, user_email, coupon_code=None):
 
     selling_price = float(amount)
 
-    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
-        user, coupon_code, "airtime", selling_price)
-    if coupon_error:
-        return {"status": "error", "message": coupon_error}
-    charge_amount = round(selling_price - (discount or 0), 2)
+    charge_amount = round(selling_price, 2)
 
     if user.wallet_balance < charge_amount:
         return {"status": "error",
@@ -155,8 +150,7 @@ def buy_airtime(network, phone, amount, user_email, coupon_code=None):
         service_type="airtime", amount=charge_amount, profit=0.0,
         status="pending",
         details={"network": network, "phone": phone, "amount": amount,
-                 "selling_price": selling_price, "coupon_code": applied_coupon.code if applied_coupon else None,
-                 "discount_amount": discount or 0}
+                 "selling_price": selling_price}
     )
     db.session.add(transaction)
     db.session.commit()
@@ -184,8 +178,6 @@ def buy_airtime(network, phone, amount, user_email, coupon_code=None):
             category="airtime", amount=profit_amount
         ))
         _award_referral_commission(user, charge_amount)
-        if applied_coupon:
-            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="airtime")
         record_purchase(transaction)
         award_cashback(transaction)
         gamification_service.record_activity(transaction)
@@ -198,7 +190,6 @@ def buy_airtime(network, phone, amount, user_email, coupon_code=None):
                 "api_reference":  api_result.get("reference"),
                 "profit_amount":  profit_amount,
                 "selling_price":  selling_price,
-                "discount_amount": discount or 0,
                 "amount_charged": charge_amount,
                 "new_balance":    round(user.wallet_balance, 2),  # FIX: added
             }
@@ -215,7 +206,7 @@ def buy_airtime(network, phone, amount, user_email, coupon_code=None):
 
 
 # ── DATA ───────────────────────────────────────────────────────────────────────
-def buy_data(plan_id, phone, user_email, coupon_code=None):
+def buy_data(plan_id, phone, user_email):
     if not phone or len(str(phone)) != 11 or not str(phone).isdigit():
         return {"status": "error", "message": "Invalid phone number. Must be 11 digits."}
 
@@ -229,11 +220,7 @@ def buy_data(plan_id, phone, user_email, coupon_code=None):
 
     selling_price = float(plan.selling_price)
 
-    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
-        user, coupon_code, "data", selling_price)
-    if coupon_error:
-        return {"status": "error", "message": coupon_error}
-    charge_amount = round(selling_price - (discount or 0), 2)
+    charge_amount = round(selling_price, 2)
 
     if user.wallet_balance < charge_amount:
         return {"status": "error",
@@ -246,8 +233,7 @@ def buy_data(plan_id, phone, user_email, coupon_code=None):
         status="pending",
         details={"plan_id": plan_id, "phone": phone,
                  "plan_name": plan.size, "provider": plan.provider,
-                 "selling_price": selling_price, "coupon_code": applied_coupon.code if applied_coupon else None,
-                 "discount_amount": discount or 0}
+                 "selling_price": selling_price}
     )
     db.session.add(transaction)
     db.session.commit()
@@ -273,8 +259,6 @@ def buy_data(plan_id, phone, user_email, coupon_code=None):
             category="data", amount=profit_amount
         ))
         _award_referral_commission(user, charge_amount)
-        if applied_coupon:
-            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="data")
         record_purchase(transaction)
         award_cashback(transaction)
         gamification_service.record_activity(transaction)
@@ -287,7 +271,6 @@ def buy_data(plan_id, phone, user_email, coupon_code=None):
                 "api_reference": api_result.get("reference"),
                 "profit_amount": profit_amount,
                 "selling_price": selling_price,
-                "discount_amount": discount or 0,
                 "amount_charged": charge_amount,
                 "new_balance":   round(user.wallet_balance, 2),
             }
@@ -302,7 +285,7 @@ def buy_data(plan_id, phone, user_email, coupon_code=None):
 
 
 # ── ELECTRICITY ────────────────────────────────────────────────────────────────
-def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email, coupon_code=None):
+def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email):
     if not phone or len(str(phone)) != 11 or not str(phone).isdigit():
         return {"status": "error", "message": "Invalid phone number. Must be 11 digits."}
     if amount <= 0:
@@ -337,11 +320,7 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email, 
 
     selling_price = float(amount)
 
-    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
-        user, coupon_code, "electricity", selling_price)
-    if coupon_error:
-        return {"status": "error", "message": coupon_error}
-    charge_amount = round(selling_price - (discount or 0), 2)
+    charge_amount = round(selling_price, 2)
 
     if user.wallet_balance < charge_amount:
         return {"status": "error",
@@ -355,8 +334,7 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email, 
         details={"disco": disco, "disco_id": disco_id,
                  "meter_number": meter_number,
                  "meter_type": meter_type, "phone": phone,
-                 "selling_price": selling_price, "coupon_code": applied_coupon.code if applied_coupon else None,
-                 "discount_amount": discount or 0}
+                 "selling_price": selling_price}
     )
     db.session.add(transaction)
     db.session.commit()
@@ -395,8 +373,6 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email, 
             category="electricity", amount=profit_amount
         ))
         _award_referral_commission(user, charge_amount)
-        if applied_coupon:
-            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="electricity")
         record_purchase(transaction)
         award_cashback(transaction)
         gamification_service.record_activity(transaction)
@@ -410,7 +386,6 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email, 
                 "units":         api_result.get("data", {}).get("units", ""),
                 "profit_amount": profit_amount,
                 "selling_price": selling_price,
-                "discount_amount": discount or 0,
                 "amount_charged": charge_amount,
                 "new_balance":   round(user.wallet_balance, 2),
             }
@@ -424,7 +399,7 @@ def buy_electricity(disco, meter_number, meter_type, amount, phone, user_email, 
 
 
 # ── CABLE TV ───────────────────────────────────────────────────────────────────
-def buy_cable_tv(plan_id, smartcard, user_email, phone="", coupon_code=None):
+def buy_cable_tv(plan_id, smartcard, user_email, phone=""):
     if not smartcard or len(str(smartcard)) < 6:
         return {"status": "error", "message": "Invalid smartcard/IUC number"}
 
@@ -438,11 +413,7 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone="", coupon_code=None):
 
     selling_price = float(plan.selling_price)
 
-    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
-        user, coupon_code, "cable_tv", selling_price)
-    if coupon_error:
-        return {"status": "error", "message": coupon_error}
-    charge_amount = round(selling_price - (discount or 0), 2)
+    charge_amount = round(selling_price, 2)
 
     if user.wallet_balance < charge_amount:
         return {"status": "error",
@@ -455,8 +426,7 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone="", coupon_code=None):
         status="pending",
         details={"plan_id": plan_id, "smartcard": smartcard,
                  "provider": plan.provider, "plan_name": plan.plan_name,
-                 "selling_price": selling_price, "coupon_code": applied_coupon.code if applied_coupon else None,
-                 "discount_amount": discount or 0}
+                 "selling_price": selling_price}
     )
     db.session.add(transaction)
     db.session.commit()
@@ -484,8 +454,6 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone="", coupon_code=None):
             category="cable_tv", amount=profit_amount
         ))
         _award_referral_commission(user, charge_amount)
-        if applied_coupon:
-            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="cable_tv")
         record_purchase(transaction)
         award_cashback(transaction)
         gamification_service.record_activity(transaction)
@@ -500,7 +468,6 @@ def buy_cable_tv(plan_id, smartcard, user_email, phone="", coupon_code=None):
                 "plan_name":     plan.plan_name,
                 "profit_amount": profit_amount,
                 "selling_price": selling_price,
-                "discount_amount": discount or 0,
                 "amount_charged": charge_amount,
                 "new_balance":   round(user.wallet_balance, 2),
             }
@@ -698,7 +665,7 @@ def parse_exam_pins(delivery):
     return out
 
 
-def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_code=None):
+def buy_exam_pin(exam_name, quantity, user_email, selling_price=None):
     """
     Buy WAEC / NECO / NABTEB / JAMB PINs through CheapDataHub.
     quantity must be 1, 2 or 5 (provider rule). The price is ALWAYS worked out
@@ -739,11 +706,7 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_cod
     if not user:
         return {"status": "error", "message": "User not found"}
 
-    discount, applied_coupon, coupon_error = coupon_service.validate_and_price(
-        user, coupon_code, "exam_pin", selling_total)
-    if coupon_error:
-        return {"status": "error", "message": coupon_error}
-    charge_amount = round(selling_total - (discount or 0), 2)
+    charge_amount = round(selling_total, 2)
 
     if user.wallet_balance < charge_amount:
         return {"status": "error", "message": f"Insufficient balance. Available: ₦{user.wallet_balance:,.2f}"}
@@ -754,8 +717,7 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_cod
         amount=charge_amount, profit=0.0, status="pending",
         details={"exam_name": exam_name, "product_id": product["product_id"], "quantity": quantity,
                  "selling_price": selling_total,
-                 "coupon_code": applied_coupon.code if applied_coupon else None,
-                 "discount_amount": discount or 0, "provider": "cheapdatahub"},
+                 "provider": "cheapdatahub"},
     )
     db.session.add(transaction)
     db.session.commit()
@@ -790,8 +752,6 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_cod
         })
         db.session.add(Profit(transaction_id=transaction.id, user_id=user.id,
                               category="exam_pin", amount=profit_amount))
-        if applied_coupon:
-            coupon_service.redeem_coupon(applied_coupon, user, transaction, discount, category="exam_pin")
         record_purchase(transaction)
         award_cashback(transaction)
         gamification_service.record_activity(transaction)
@@ -810,7 +770,6 @@ def buy_exam_pin(exam_name, quantity, user_email, selling_price=None, coupon_cod
                 "serial":          pins[0]["serial"],
                 "profit_amount":   profit_amount,
                 "selling_price":   selling_total,
-                "discount_amount": discount or 0,
                 "amount_charged":  charge_amount,
                 "new_balance":     round(user.wallet_balance, 2),
             },

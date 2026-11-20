@@ -14,14 +14,14 @@ from datetime import datetime, date, timedelta
 from models import db, User
 from spin_models import (
     SpinConfig, SpinSegment, SpinDailyCounter, SpinEntry,
-    UserPoints, SpinCouponAward,
+    UserPoints,
 )
 from models import Profit
 
 logger = logging.getLogger(__name__)
 
 # reward_type values a segment/admin may use
-REWARD_TYPES = ('airtime', 'data', 'cashback', 'wallet_balance', 'coupon', 'bonus_points')
+REWARD_TYPES = ('airtime', 'data', 'cashback', 'wallet_balance', 'bonus_points')
 
 # 'airtime' and 'data' rewards are credited as spendable wallet balance —
 # Cheap4U has no safe way to auto-dispatch a real top-up without a phone
@@ -46,7 +46,7 @@ def get_config():
 def list_segments(active_only=False):
     q = SpinSegment.query
     if active_only:
-        q = q.filter_by(is_active=True)
+        q = q.filter_by(is_active=True).filter(SpinSegment.reward_type != 'coupon')
     return q.order_by(SpinSegment.display_order.asc(), SpinSegment.id.asc()).all()
 
 
@@ -62,7 +62,7 @@ def _seed_default_segments_if_empty():
         ('₦20 Airtime',      'airtime',       20.0,  20, '#F59E0B'),
         ('50 Bonus Points',  'bonus_points',  50,    15, '#7C3AED'),
         ('₦200 Data',        'data',          200.0, 6,  '#DB2777'),
-        ('₦100 Coupon',      'coupon',        100.0, 5,  '#0EA5E9'),
+        ('₦100 Cashback',    'cashback',      100.0, 5,  '#0EA5E9'),
         ('Try Again',        'bonus_points',  0,     25, '#94A3B8'),
         ('₦500 Cashback',    'cashback',      500.0, 2,  '#DC2626'),
     ]
@@ -198,13 +198,6 @@ def get_spin_status(user_id):
 
 # ── reward payout ───────────────────────────────────────────────────────────
 
-def _generate_coupon_code():
-    while True:
-        code = 'SPIN' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        if not SpinCouponAward.query.filter_by(code=code).first():
-            return code
-
-
 def _get_or_create_points(user_id):
     points = UserPoints.query.filter_by(user_id=user_id).first()
     if not points:
@@ -216,7 +209,7 @@ def _get_or_create_points(user_id):
 
 def _apply_reward(user, segment):
     """Credits the won reward to the correct place. Returns extra info
-    (e.g. a coupon code) to include in the spin result, if any."""
+    to include in the spin result, if any."""
     reward_type = segment.reward_type
     value = segment.reward_value or 0
     extra = {}
@@ -235,14 +228,6 @@ def _apply_reward(user, segment):
         points = _get_or_create_points(user.id)
         points.balance = (points.balance or 0) + int(value)
 
-    elif reward_type == 'coupon':
-        code = _generate_coupon_code()
-        expires_at = datetime.utcnow() + timedelta(days=30)
-        db.session.add(SpinCouponAward(
-            user_id=user.id, code=code, discount_amount=value, expires_at=expires_at,
-        ))
-        extra['coupon_code'] = code
-        extra['coupon_expires_at'] = expires_at.isoformat()
 
     return extra
 
@@ -444,35 +429,29 @@ def _fetch_rows(since, user_id=None):
 
 
 def _bucket(rtype, value):
-    """Which total a reward counts towards: 'money', 'coupon', 'points' or 'none'."""
+    """Which total a reward counts towards: 'money', 'points' or 'none'."""
     if value <= 0:
         return 'none'
     if rtype in MONEY_TYPES:
         return 'money'
-    if rtype == 'coupon':
-        return 'coupon'
     if rtype == 'bonus_points':
         return 'points'
     return 'none'
 
 
-def build_report(rows, coupons_used_value=0.0, coupons_used_count=0, period='today', now=None):
+def build_report(rows, period='today', now=None):
     """Summary, per-prize table and daily series from plain row dicts."""
     now = now or datetime.utcnow()
     total = len(rows)
     players = {r['user_id'] for r in rows}
     free = sum(1 for r in rows if r['is_free'])
     fees = sum(r['cost'] for r in rows)
-    money = coupon = points = 0.0
-    coupons_issued = 0
+    money = points = 0.0
     zero_spins = 0
     for r in rows:
         b = _bucket(r['reward_type'], r['reward_value'])
         if b == 'money':
             money += r['reward_value']
-        elif b == 'coupon':
-            coupon += r['reward_value']
-            coupons_issued += 1
         elif b == 'points':
             points += r['reward_value']
         else:
@@ -485,15 +464,11 @@ def build_report(rows, coupons_used_value=0.0, coupons_used_count=0, period='tod
         'paid_spins':         total - free,
         'fees_collected':     round(fees, 2),
         'cash_won':           round(money, 2),
-        'coupons_issued':     coupons_issued,
-        'coupon_value_issued': round(coupon, 2),
-        'coupons_used_count': int(coupons_used_count),
-        'coupons_used_value': round(coupons_used_value, 2),
         'points_awarded':     int(points),
         'no_prize_spins':     zero_spins,
         'avg_spins_per_player': round(total / len(players), 2) if players else 0,
-        # what the feature really cost / earned: fees in, cash + used coupons out
-        'net_result':         round(fees - money - coupons_used_value, 2),
+        # what the feature really cost / earned: fees in, cash out
+        'net_result':         round(fees - money, 2),
     }
 
     # per prize label
@@ -538,12 +513,12 @@ def build_report(rows, coupons_used_value=0.0, coupons_used_count=0, period='tod
 
 
 def aggregate_players(rows):
-    """One entry per user: spins, free/paid, cash won, coupons, points, fees, last spin."""
+    """One entry per user: spins, free/paid, cash won, points, fees, last spin."""
     agg = {}
     for r in rows:
         a = agg.setdefault(r['user_id'], {
             'user_id': r['user_id'], 'spins': 0, 'free_spins': 0, 'paid_spins': 0,
-            'cash_won': 0.0, 'coupon_value': 0.0, 'points': 0, 'fees_paid': 0.0,
+            'cash_won': 0.0, 'points': 0, 'fees_paid': 0.0,
             'last_spin': None, 'biggest_win': 0.0,
         })
         a['spins'] += 1
@@ -556,15 +531,12 @@ def aggregate_players(rows):
         if b == 'money':
             a['cash_won'] += r['reward_value']
             a['biggest_win'] = max(a['biggest_win'], r['reward_value'])
-        elif b == 'coupon':
-            a['coupon_value'] += r['reward_value']
         elif b == 'points':
             a['points'] += int(r['reward_value'])
         if r['created_at'] and (a['last_spin'] is None or r['created_at'] > a['last_spin']):
             a['last_spin'] = r['created_at']
     for a in agg.values():
         a['cash_won'] = round(a['cash_won'], 2)
-        a['coupon_value'] = round(a['coupon_value'], 2)
         a['fees_paid'] = round(a['fees_paid'], 2)
         a['biggest_win'] = round(a['biggest_win'], 2)
     return list(agg.values())
@@ -578,14 +550,6 @@ def _sort_players(players, sort):
     return sorted(players, key=lambda p: (-p['cash_won'], -p['spins']))      # 'won' (default)
 
 
-def _coupons_used(since):
-    q = SpinCouponAward.query.filter(SpinCouponAward.is_used.is_(True))
-    if since is not None:
-        q = q.filter(SpinCouponAward.used_at >= since)
-    used = q.all()
-    return sum(c.discount_amount or 0 for c in used), len(used)
-
-
 def _user_brief(user):
     return {'name': user.name, 'email': user.email, 'phone': user.phone} if user else \
         {'name': 'Deleted user', 'email': '', 'phone': ''}
@@ -595,8 +559,7 @@ def get_admin_report(period='today'):
     period = _normalise_period(period)
     since = _period_since(period)
     rows = _fetch_rows(since)
-    used_value, used_count = _coupons_used(since)
-    report = build_report(rows, used_value, used_count, period)
+    report = build_report(rows, period=period)
     report['period'] = period
     report['since'] = since.isoformat() if since else None
 

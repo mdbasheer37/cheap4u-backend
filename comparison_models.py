@@ -1,7 +1,7 @@
 # comparison_models.py — Smart Price Comparison config
 #
 # The comparison engine itself is stateless — it reads live DataPlan,
-# Transaction and Coupon data on every request rather than caching
+# Transaction data on every request rather than caching
 # results, so it's never stale. This file only holds the admin-tunable
 # scoring weights and lookback window.
 
